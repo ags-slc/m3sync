@@ -1,72 +1,81 @@
 #!/usr/bin/env sh
 
-#
 # m3sync: minimalistic multi-machine sync
 #
-# Synchronizes a primary directory with a secondary.
+# Full-duplex (non-concurrent) synchronization, with minimal requirements.
 #
 # This script is essentially a lightweight wrapper around the wonderfully
-# efficient rsync. It can create read-update mirrors.
+# lightweight and efficient rsync.
 #
 # Usage:
-#   m3sync [-cdhnopv] source_dir target_uri
+#   m3sync [-cdhnov] source_dir target_uri
 #
-# The result is similar to creating a mirror of the primary directory; however,
-# the sync is minimally bi-directional according to the following formula:
+# While m3sync does not allow for concurrency, it solves for some common use
+# cases, and can be an effective synchronization utility provided the user
+# understands the limitations.
 #
-#   files existing in the secondary directory, but not the primary, are deleted
-#   from the secondary;
+# POSIX and mostly POSIX-compliant systems should be compatible with m3sync.
+# The feature set is purposefully minimal to acheive maximum portability, and
+# in order to limit external dependencies.
 #
-#   files modified in the secondary directory that are newer than their
-#   counterpart in the primary will sync back to the primary;
-#
-#   files created, updated or deleted in the primary will sync to the secondary.
-#
-# Therefore, only the primary can create or delete files. The mirror is read and
-# update only.
-#
-# While m3sync is not full duplex, it solves for some common use cases, and can
-# be an effective synchronization utility provided the user understands the
-# limitations.
-#
-# POSIX and mostly POSIX-compliant systems should be compatible with m3sync. The
-# feature set is purposefully minimal to acheive maximum portability, and in
-# order to limit external dependencies.
+# This tool began as a thought experiment on how to create a bi-directional
+# file synchronization tool using only tools that are commonly available at
+# every (POSIX) command line.
 #
 # Copyright (C) 2018 Andrew G. Spencer <ags@iomaestro.com>. All rights reserved.
 # Please see LICENSE for additional details.
-#
 
 set -e
 
 #
-# Define options and parameters that can be read from the command line or
-# settings file.
-#
-typeset    mode="secondary"
-typeset -i is_enabled=1
-typeset -i is_dry_run=0
-typeset -i is_verbose=0
-typeset -i can_override=0
-typeset -i can_sync_user_cvsignore=0
-typeset    source_dir=
-typeset    target_uri=
-typeset    target_host=
-typeset    target_dir=
-
-#
-# Declare and set read-only constants.
+# Shell-related globals.
 #
 typeset -r  program="${0##*/}"
-typeset -r  settings_file=".m3sync-settings"
-typeset -r  lock_dir=".m3sync"
-typeset -ri timeout=15
-typeset -r  backup_prefix=".backup"
-typeset -r  excludes="${settings_file} ${lock_dir}/ ${backup_prefix}-*"
 typeset -r  oifs=$IFS
+typeset -r  timestamp=$(date '+%Y%m%d%H%M')
 
+#
+# Option and parameter globals.
+#
+typeset     mode="mirror"
+typeset -i  is_enabled=1
+typeset -i  is_dry_run=0
+typeset -i  is_verbose=0
+typeset -i  can_override=0
+typeset -i  can_sync_cvsignore=0
+typeset -ir timeout=15
+typeset     source_dir=
+typeset     target_uri=
+typeset     target_host=
+typeset     target_dir=
+
+#
+# Control files
+#
+typeset -r  cf_dir=".m3sync"
+typeset -r  cf_settings="${cf_dir}/settings"
+typeset -r  cf_last_run="${cf_dir}/last-run"
+typeset -r  cf_previous_state="${cf_dir}/previous-state"
+typeset -r  cf_current_state="${cf_dir}/current-state"
+typeset -r  cf_restore_state="${cf_dir}/restore-state"
+typeset -r  cf_delta="${cf_dir}/delta"
+typeset -r  cf_protected_list="${cf_dir}/protected-list"
+typeset -r  backup_dir="${cf_dir}/backup"
+typeset -r  history_dir="${cf_dir}/changelog"
+typeset -r  lock_dir="${cf_dir}/lock"
+typeset     active_lock_dir=
+
+#
+# Other globals.
+#
+typeset     rsync_opts=
+typeset     backup_opts=
+
+#
+# Usage.
+#
 typeset -r  help_text="Usage:
-    $program [-cdhnopv] <source_dir> <target_uri>
+    $program [-cdhnov] <source_dir> <target_uri>
     $program -h
 
 Options:
@@ -74,90 +83,135 @@ Options:
     -d        Log debug messages to STDERR.
     -h        Show this help text.
     -n        Dry run only, do not sync. Implies -v.
-    -o        Allow $settings_file file to override command line options.
-    -p        Operate in primary (master) mode, with <source_dir> as origin.
+    -o        Allow the ${cf_settings} file to override command line options.
     -v        Log warning and notice messages to STDERR."
 
-#
-# Declare other constants.
-#
-typeset source_backup_opt=
-typeset target_backup_opt=
-typeset exclude_opts=
-
-#
-# Print m3sync's usage message to STDOUT and exit.
-#
-usage() {
-    echo "$help_text"
-    exit
-}
-
-#
-# Log error messages to STDERR, and other messages if debug or verbose is set.
-#
-# $1 - the message type: error, debug, notice
-# $@ - messages to be logged
-#
 log_msg() {
-    local -r msg_type="$1"; shift
+    # Log error messages to STDERR, and other messages if debug or verbose is
+    # set.
+    #
+    # Input params:
+    # $1 - the message type: error, debug, notice
+    # $@ - messages to be logged
+
+    local -r msg_type="${1}"; shift
     local -r msg="$@"
 
     # Only log debug messages if debug is set.
-    if [[ "$msg_type" = "debug" && "$is_debug" -eq 0 ]]; then
+    if [[ "${msg_type}" = "debug" && "${is_debug}" -eq 0 ]]; then
         return 0
     fi
 
     # Always log error messages, and other messages as configured.
-    if [[ "$msg_type" = "error" || "$msg_type" = "debug" || "$is_verbose" -eq 1 ]]; then
-        local -r timestamp=$(date +'%Y-%m-%dT%H:%M:%S%z')
-        echo "[$timestamp] $program: $msg_type: $msg" >&2
+    if [[ "${msg_type}" = "error" || "${msg_type}" = "debug" || "${is_verbose}" -eq 1 ]]; then
+        local log_timestamp=$(date +'%Y-%m-%dT%H:%M:%S%z')
+        echo "[${log_timestamp}] ${program}: ${msg_type}: ${msg}" >&2
     fi
 }
 
-#
-# Set the directory parameters for syncing.
-#
-# $1 - source directory
-# $2 - target URI
-#
-set_dir_params() {
-    source_dir=$1; shift
-    target_uri=$1; shift
+parse_sync_params() {
+    # Parse the sync params and set the global source and target locations for
+    # syncing.
+    #
+    # Input params:
+    # $1 - source directory
+    # $2 - target URI
+
+    source_dir=${1}; shift
+    target_uri=${1}; shift
 
     IFS=":"
 
-    # split the URI into an array, using `set` for maximum portability
-    set $target_uri
+    # Split the URI into an array, using `set` for maximum portability.
+    set ${target_uri}
 
     if [[ $# -lt 2 ]]; then
-        target_dir="$1"
+        target_dir="${1}"
     else
-        target_host="$1"
-        target_dir="$2"
+        target_host="${1}"
+        target_dir="${2}"
     fi
 
     IFS=$oifs
 }
 
-#
-# Release process lock upon EXIT or other trapped signals.
-#
+set_overrides() {
+    # Read the specified config file and override the global configuration
+    # settings found in the file.
+    #
+    # Input params:
+    # $1 - the path to the config file
+    # $2 - the config file name
+
+    local -r  config_file="${1}/${2}"
+
+    if [[ -f "${config_file}" ]]; then
+        while read setting; do
+            set ${setting}
+
+            case "${1}" in
+                # Ideally, we'd instead use a pattern substitution here, but
+                # alas, we need to support legacy ksh...
+                "enabled" ) [[ "${2}" = "false" ]] && is_enabled=0 ;;
+                "mode"    ) mode=${2} ;;
+            esac
+        done < "${config_file}" || return 0 # config may not have all settings
+    fi
+}
+
+is_initialized() {
+    # Check the initialization status of an m3sync directory.
+    #
+    # Input params:
+    # $1 - the directory to check
+
+    local -r cmd="stat ${1}/${cf_dir}"
+
+    if [[ "${1}" = "${source_dir}" || ! "${target_host}" ]]; then
+        ${cmd} 2> /dev/null 1> /dev/null # for portability pete's sake...
+    else
+        ssh ${target_host} "$cmd" 2> /dev/null 1> /dev/null
+    fi
+}
+
+initialize_dir() {
+    # Initialize an m3sync directory.
+    #
+    # Input params:
+    # $1 - the directory to initialize
+
+    local -r mkdirs="mkdir -p ${1}/${backup_dir} ${1}/${history_dir}"
+    local -r mkcfg="echo enabled true"
+
+    if [[ "${1}" = "${source_dir}" || ! "${target_host}" ]]; then
+        ${mkdirs} && ${mkcfg} > ${1}/${cf_settings}
+        touch ${1}/${cf_last_run}
+    else
+        ssh ${target_host} "${mkdirs} && ${mkcfg} > ${1}/${cf_settings}"
+    fi
+
+    log_msg debug "initialized ${1}"
+}
+
 release_lock() {
-    rm -rf "${source_dir}/${lock_dir}" &&
+    # Release process lock upon EXIT or other trapped signals.
+    rm -rf "${active_lock_dir}" &&
         log_msg notice "lock released" ||
         log_msg error "failed to release lock"
 }
 
-#
-# Get a lock to ensure that this is the only active m3sync process for the
-# primary directory. This (slightly naive) method is sufficient for most use
-# cases, and avoids any dependencies upon flock, solo, et al.
-#
-# $1 - the lock directory
-#
 get_lock() {
-    if mkdir "${source_dir}/${lock_dir}"; then
+    # Get a lock to ensure that this is the only active m3sync process for the
+    # primary directory. This (slightly naive) method is sufficient for most
+    # use cases, and avoids any dependencies upon flock, solo, et al.
+    #
+    # Input params:
+    # $1 - the base path of the lock directory
+
+    if mkdir "${1}/${lock_dir}"; then
+        # The trap function cannot take params, set the global active_lock_dir
+        # instead.
+        active_lock_dir="${1}/${lock_dir}"
         log_msg notice "lock acquired"
         trap release_lock EXIT
     else
@@ -166,131 +220,200 @@ get_lock() {
     fi
 }
 
-#
-# Look in the source directory for a settings file. If it exists, override the
-# mode and enabled settings.
-#
-get_dir_settings() {
-    local -r  dir_settings="$source_dir/$settings_file"
+filtered_find() {
+    # Return the filtered list of directories, files and links.
+    #
+    # Input params:
+    # $1 - the directory to traverse
+    # $@ - additional filters (optional)
 
-    if [[ -f "$dir_settings" ]]; then
-        while read setting; do
-            set $setting
+    local -r file_types="-type f -or -type d -or -type l"
+    local -r pattern="s/${1}\///g"
 
-            case "$1" in
-                # ideally, we'd instead use a pattern substitution here, but
-                # alas, we need to support legacy ksh...
-                "enabled" ) [[ "$2" = "false" ]] && is_enabled=0 ;;
-                "mode"    ) mode=$2 ;;
-            esac
-        done < "$dir_settings"
+    log_msg debug "filtered_find params: $@"
+
+    find $@ \( ${file_types} \) | sed ${pattern} | grep -v ${1} | grep -v ${cf_dir}
+}
+
+get_current_state() {
+    # Return the current list of directories, files and links.
+    #
+    # Input params:
+    # $1 - the directory to traverse
+
+    filtered_find ${1}
+}
+
+get_delta() {
+    # Return the delta of the directory's previous and current states.
+    #
+    # Input params:
+    # $1 - the directory to examine
+
+    if [[ -f ${1}/${cf_previous_state} ]]; then
+        # We expect changes, so trap diff's exit code and return 0 instead.
+        diff ${1}/${cf_previous_state} ${1}/${cf_current_state} || return 0
     fi
 }
 
-#
-# Set the backup option strings for rsync usage.
-#
-set_backup_opts() {
-    local -r timestamp=$(date '+%Y%m%d%H%M')
-    local -r backup_dir="${backup_prefix}-${timestamp}"
-    local    backup_path="$backup_dir"
+get_protected_list() {
+    # Return a list of files/directories/links which have been added or removed
+    # in the ${source_dir} since the last sync. These files are protected when
+    # receiving updates from the ${target_dir}.
+    #
+    # Input params:
+    # $1 - the directory to examine
 
-    source_backup_opt="--backup-dir=$backup_path"
-    log_msg debug $source_backup_opt
+    log_msg debug "creating protected list"
+    # Always protect the control files.
+    echo "${cf_dir}*"
 
-    # If this is a local sync, include the target directory in the backup path.
-    [[ ! "$target_host" ]] && backup_path="$target_dir/$backup_dir"
+    grep "[<|>]" ${1}/${cf_delta} | colrm 1 2
 
-    target_backup_opt="--backup-dir=$backup_path"
-    log_msg debug $target_backup_opt
+    # TODO: this will protect a file that is modified on the source but deleted
+    # from the target within the same synchronization window. Is it even
+    # desired or necessary? m3sync is not intended for scenarios where the
+    # target and the source are being concurrently modified... the model is one
+    # of asynchronous modification.
+    filtered_find ${1} -newer ${1}/${cf_last_run}
 }
 
-#
-# Create rsync exclude strings for defined excludes.
-#
-set_exclude_opts() {
-    for exclude in $excludes; do
-        if [[ "$exclude_opts" = "" ]]; then
-            exclude_opts="--exclude=$exclude"
-        else
-            exclude_opts+=" --exclude=$exclude"
-        fi
-    done
-
-    log_msg debug "$exclude_opts"
+restore_current_state() {
+    mv ${1}/${cf_restore_state} ${1}/${cf_current_state}
 }
 
-#
-# Set rsync options according to the m3sync mode of operation and options.
-#
-set_sync_opts() {
-    local -r base_opts="--timeout=$timeout -abCu"
+get_backup_opts() {
+    # Set the backup option strings for rsync usage.
+    #
+    # Input params:
+    # $1 - the receiving directory
+
+    local -r backup_path="${backup_dir}/${timestamp}"
+    local    backup_opts=
+
+    # If this is a local sync, include the receiving directory in the backup
+    # path.
+    if [[ "${1}" = "${source_dir}" || ! "${target_host}" ]]; then
+        backup_opts="--backup-dir=${1}/${backup_path}"
+    else
+        backup_opts="--backup-dir=${backup_path}"
+    fi
+
+    backup_opts="--backup-dir=${backup_path}"
+    log_msg debug ${backup_opts}
+
+    echo ${backup_opts}
+}
+
+prepare_sync() {
+    # Prepare sync state and options.
+    #
+    # Input params:
+    # $1 - the source directory of the sync
+
+    local -r base_opts="--timeout=${timeout} --delete -abCu"
+    local -r exclude_opts="--exclude=${cf_dir}*"
     local    extra_opts=
 
-    if [[ "$is_dry_run" -eq 1 ]]; then
-        extra_opts="nv"
+    if [[ -f ${1}/${cf_current_state} ]]; then
+        mv $1/${cf_current_state} $1/$cf_previous_state
     fi
 
-    if [[ "$is_verbose" -eq 1 && "$is_dry_run" -eq 0 ]]; then
+    get_current_state ${1} > $1/${cf_current_state}
+    get_delta ${1} > ${1}/${cf_delta}
+    get_protected_list ${1} | sort -u > ${1}/${cf_protected_list}
+
+    if [[ "${is_dry_run}" -eq 1 ]]; then
+        extra_opts="nv"
+        cp ${1}/${cf_current_state} ${1}/${cf_restore_state}
+    fi
+
+    if [[ "${is_verbose}" -eq 1 && "${is_dry_run}" -eq 0 ]]; then
         extra_opts="v"
     fi
 
-    if [[ "$mode" = "secondary" ]]; then
-        rsync_get_opts="${base_opts}${extra_opts} --delete"
-        rsync_put_opts="${base_opts}${extra_opts}"
-    elif [[ "$mode" = "primary" ]]; then
-        rsync_get_opts="${base_opts}${extra_opts}"
-        rsync_put_opts="${base_opts}${extra_opts} --delete"
-    fi
+    rsync_opts="${exclude_opts} ${base_opts}${extra_opts}"
 
-    log_msg debug "get: $rsync_get_opts" "put: $rsync_put_opts"
+    log_msg debug "rsync_opts: ${rsync_opts}"
 }
 
-#
-# Copy the user's .cvsignore file to the remote host.
-#
-sync_user_cvsignore() {
-    if [[ "$target_host" ]]; then
+sync_protected() {
+    # Sync updates from the $target_dir, while masking source updates.
+    #
+    # Input params:
+    # $1 - the source directory of the sync
+
+    local -r protect_opts="--exclude-from=${1}/${cf_protected_list}"
+    local -r backup_opts=$(get_backup_opts ${1})
+
+    rsync ${protect_opts} ${backup_opts} ${rsync_opts} ${target_uri}/ ${source_dir}
+}
+
+record_history() {
+    # Keep records of changes.
+    # TODO: change this to use rsync output instead?
+    #
+    # Input params:
+    # $1 - directory to track
+
+    local -r this_history_dir=${1}/${history_dir}/${timestamp}
+
+    if [[ -f ${1}/${cf_previous_state} ]]; then
+        # TODO: fix variable names to avoid duplication
+        mkdir -p ${this_history_dir}
+        mv ${1}/${cf_previous_state} ${this_history_dir}/previous-state
+        mv ${1}/${cf_delta} ${this_history_dir}/delta
+    fi
+}
+
+sync_cvsignore() {
+    # Copy the user's .cvsignore file to the remote host.
+
+    if [[ "${target_host}" ]]; then
         log_msg debug "copying ~/.cvsignore to the target host"
-        rsync -av --timeout="$timeout" ~/.cvsignore "$target_host":.cvsignore
+        rsync -a --timeout="${timeout}" ~/.cvsignore "${target_host}":.cvsignore
     else
         log_msg notice ".cvsignore not copied, the target directory is local"
     fi
 }
 
-#
-# Perform a bidirectional sync between the source and target directories.
-#
 sync() {
-    local -r put_params="$rsync_put_opts $target_backup_opt $exclude_opts
-                         ${source_dir}/ $target_uri"
-    local -r get_params="$rsync_get_opts $source_backup_opt $exclude_opts
-                         ${target_uri}/ $source_dir"
+    # Sync updates to the $target_dir.
+    #
+    # Input params:
+    # $1 - the source directory of the sync
 
-    [[ "$can_sync_user_cvsignore" -eq 1 ]] && sync_user_cvsignore
+    local -r backup_opts=$(get_backup_opts ${target_dir})
 
-    if [[ "$mode" = "secondary" ]]; then
-        rsync $get_params &&
-        rsync $put_params
-    elif [[ "$mode" = "primary" ]]; then
-        rsync $put_params &&
-        rsync $get_params
+    [[ "${can_sync_cvsignore}" -eq 1 ]] && sync_cvsignore
+    rsync ${backup_opts} ${rsync_opts} ${source_dir}/ ${target_uri}
+}
+
+finalize_sync() {
+    # Finalize the sync by restoring state (if a dry run) and recording the
+    # changes. The last-run control file is also updated.
+    #
+    # Input params:
+    # $1 - the source directory of the sync
+
+    if [[ "${is_dry_run}" -eq 1 ]]; then
+        restore_current_state ${1}
+    else
+        [[ $(is_initialized ${target_dir}) ]] && initialize_dir ${target_dir}
+        record_history ${source_dir}
+        touch ${1}/${cf_last_run}
     fi
 }
 
-#
-# Initialize and execute m3sync.
-#
 main() {
-    # Initialize the mode of operation.
-    while getopts "cdhnopv" opt; do
-        case "$opt" in
-            c  ) can_sync_user_cvsignore=1 ;;
+    # Initialize the mode of operation as specified at the command line.
+    while getopts "cdhnov" opt; do
+        case "${opt}" in
+            c  ) can_sync_cvsignore=1 ;;
             d  ) is_debug=1 ;;
             h  ) mode="usage" ;;
             n  ) is_dry_run=1 ;;
             o  ) can_override=1 ;;
-            p  ) mode="primary" ;;
             v  ) is_verbose=1 ;;
             \? ) mode="usage" ;;
         esac
@@ -298,28 +421,40 @@ main() {
     
     shift "$((OPTIND - 1))"
 
-    if [[ "$mode" = "usage" || "$#" -lt 2 ]]; then
-        usage
+    if [[ "${mode}" = "usage" || "$#" -lt 2 ]]; then
+        echo "${help_text}"
+        exit
     fi
 
     # Establish the source and target parameters.
-    set_dir_params "$@"
+    parse_sync_params "$@"
     
-    log_msg debug "mode:$mode enabled:$is_enabled dry-run:$is_dry_run verbose:$is_verbose $source_dir $target_uri"
-
-    # Get and update directory-specific settings if overrides are allowed.
-    if [[ "$can_override" -eq 1 ]]; then
-        get_dir_settings
+    if [[ "${can_override}" -eq 1 ]]; then
+        set_overrides ${source_dir} ${cf_settings}
     fi
 
-    if [[ "$is_enabled" -eq 1 ]]; then
-        get_lock
-        set_backup_opts
-        set_exclude_opts
-        set_sync_opts
-        sync
+    if [[ "${is_enabled}" -eq 1 ]]; then
+        if ! is_initialized ${source_dir}; then
+            initialize_dir ${source_dir}
+        elif is_initialized ${target_dir}; then
+            # Both source and target are initialized; enter full-duplex mode.
+            mode="full-duplex"
+        fi
+
+        log_msg debug "mode:${mode} enabled:${is_enabled} dry-run:${is_dry_run} verbose:${is_verbose}"
+        log_msg debug "sync ${source_dir} to ${target_uri}"
+
+        get_lock ${source_dir}
+        prepare_sync ${source_dir}
+
+        if [[ "${mode}" = "full-duplex" ]]; then
+            sync_protected ${source_dir}
+        fi
+
+        sync ${source_dir} ${target_dir}
+        finalize_sync ${source_dir}
     else
-        log_msg error "Sync is not enabled for $source_dir."
+        log_msg error "Sync is not enabled for ${source_dir}."
     fi
 }
 
