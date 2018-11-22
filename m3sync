@@ -228,7 +228,7 @@ filtered_find() {
     # $@ - additional filters (optional)
 
     local -r file_types="-type f -or -type d -or -type l"
-    local -r pattern="s/${1}\///g"
+    local -r pattern="s;${1}/;;g"
 
     log_msg debug "filtered_find params: $@"
 
@@ -399,7 +399,10 @@ finalize_sync() {
     if [[ "${is_dry_run}" -eq 1 ]]; then
         restore_current_state ${1}
     else
-        [[ $(is_initialized ${target_dir}) ]] && initialize_dir ${target_dir}
+        if ! is_initialized ${target_dir}; then
+            initialize_dir ${target_dir}
+        fi
+
         record_history ${source_dir}
         touch ${1}/${cf_last_run}
     fi
