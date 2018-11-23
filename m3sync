@@ -170,7 +170,7 @@ is_initialized() {
     if [[ "${1}" = "${source_dir}" || ! "${target_host}" ]]; then
         ${cmd} 2> /dev/null 1> /dev/null # for portability pete's sake...
     else
-        ssh ${target_host} "$cmd" 2> /dev/null 1> /dev/null
+        ssh ${target_host} "${cmd}" 2> /dev/null 1> /dev/null
     fi
 }
 
@@ -316,10 +316,10 @@ prepare_sync() {
     local    extra_opts=
 
     if [[ -f ${1}/${cf_current_state} ]]; then
-        mv $1/${cf_current_state} $1/$cf_previous_state
+        mv ${1}/${cf_current_state} ${1}/${cf_previous_state}
     fi
 
-    get_current_state ${1} > $1/${cf_current_state}
+    get_current_state ${1} > ${1}/${cf_current_state}
     get_delta ${1} > ${1}/${cf_delta}
     get_protected_list ${1} | sort -u > ${1}/${cf_protected_list}
 
