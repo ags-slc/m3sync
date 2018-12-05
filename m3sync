@@ -5,7 +5,7 @@
 # Full-duplex (non-concurrent) synchronization, with minimal requirements.
 #
 # This script is essentially a lightweight wrapper around the wonderfully
-# lightweight and efficient rsync.
+# robust and efficient rsync.
 #
 # Usage:
 #   m3sync [-cdhnov] source_dir target_uri
@@ -14,13 +14,13 @@
 # cases, and can be an effective synchronization utility provided the user
 # understands the limitations.
 #
-# POSIX and mostly POSIX-compliant systems should be compatible with m3sync.
-# The feature set is purposefully minimal to acheive maximum portability, and
-# in order to limit external dependencies.
+# POSIX and mostly POSIX-compliant systems should be compatible with m3sync. The
+# feature set is purposefully minimal to acheive maximum portability, and in
+# order to limit external dependencies.
 #
-# This tool began as a thought experiment on how to create a bi-directional
-# file synchronization tool using only tools that are commonly available at
-# every (POSIX) command line.
+# This tool began as a thought experiment on how to create a bi-directional file
+# synchronization tool using only utilities that are commonly available at every
+# (POSIX) command line.
 #
 # Copyright (C) 2018 Andrew G. Spencer <ags@iomaestro.com>. All rights reserved.
 # Please see LICENSE for additional details.
