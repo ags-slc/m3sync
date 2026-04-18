@@ -58,6 +58,8 @@ See `.claude/agents/`:
 - `test-writer` — writes regression tests from a bug ID or scenario description.
 - `refactor-finisher` — continues the partial functional refactor; no
   behavior change.
+- `shell-quality` — enforces clean shell code + wide POSIX compatibility;
+  can apply minimal behavior-preserving cleanups.
 - `reviewer` — reviews a diff before commit; catches regressions and
   style drift.
 
