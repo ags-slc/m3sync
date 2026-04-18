@@ -209,9 +209,19 @@ initialize_dir() {
 
 release_lock() {
     # Release process lock upon EXIT or other trapped signals.
-    rm -rf "${active_lock_dir}" &&
-        log_msg notice "lock released" ||
-        log_msg error "failed to release lock"
+    #
+    # Guards against an unset active_lock_dir (the trap could fire before
+    # get_lock set it) and uses rmdir so a non-empty lock dir — which
+    # would indicate a bug — fails loudly rather than being clobbered by
+    # rm -rf.
+    if [ -z "${active_lock_dir}" ]; then
+        return 0
+    fi
+    if rmdir "${active_lock_dir}" 2> /dev/null; then
+        log_msg debug "lock released"
+    else
+        log_msg error "failed to release lock at ${active_lock_dir}"
+    fi
 }
 
 get_lock() {
