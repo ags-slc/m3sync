@@ -155,16 +155,18 @@ set_overrides() {
     local -r  config_file="${1}/${2}"
 
     if [[ -f "${config_file}" ]]; then
+        # Case arms use 'if' rather than '&&' so a non-matching test does
+        # not leave the loop body with a non-zero exit status (which the
+        # old '|| return 0' was silently masking — along with any real I/O
+        # error on ${config_file}). Unreadable settings now propagate.
         while read setting; do
             set ${setting}
 
             case "${1}" in
-                # Ideally, we'd instead use a pattern substitution here, but
-                # alas, we need to support legacy ksh...
-                "enabled" ) [[ "${2}" = "false" ]] && is_enabled=0 ;;
+                "enabled" ) if [[ "${2}" = "false" ]]; then is_enabled=0; fi ;;
                 "mode"    ) mode=${2} ;;
             esac
-        done < "${config_file}" || return 0 # config may not have all settings
+        done < "${config_file}"
     fi
 }
 
