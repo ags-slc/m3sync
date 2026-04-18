@@ -5,6 +5,11 @@
 
 ## Critical (data loss / correctness)
 
+- **[BUG-37] Deletion resurrection: peer-side restore silently undoes an intentional delete** — m3sync:sync_protected (pre-fix)
+  - What: scenario A from `docs/FINDINGS-algorithm.md`. Source deletes X in cycle N, the deletion propagates to target. Between cycles, X reappears on target (admin restore, backup restore, sneakernet). Cycle N+1's delta is empty; the path is neither in the delta nor newer-than-last-run, so it's not protected. Leg 1 (target → source, `--exclude-from=protected-list`) happily pulls X back to source. The user's deliberate deletion is silently undone.
+  - Impact: cumulative data-correctness drift. Deletions are not durable across resurrection events.
+  - Suggested fix: persist a `.m3sync/tombstones` file listing every path that has been deleted on source, with epoch timestamps. On each run, purge any tombstoned path that has reappeared on target (local `rm` or ssh `rm`), and clear any tombstone whose path has been deliberately re-created on source. Prune entries older than `M3SYNC_TOMBSTONE_DAYS` (default 30) so the file doesn't grow unbounded.
+
 - **[BUG-36] Conflicts silently buried in `.m3sync/backup/<ts>/`** — m3sync:sync (pre-fix)
   - What: when both sides modify the same path between runs, the protected-list picks source as the winner, and the target's losing version gets moved into `.m3sync/backup/<ts>/` by rsync's `-b` (when using GNU rsync) or simply overwritten (openrsync, per BUG-33). Users had no visible signal that a conflict happened. By the time they noticed the divergence days later, the backup directory was buried under unrelated runs and often never checked.
   - Impact: Syncthing-style silent data loss. Exactly scenario B in `docs/FINDINGS-algorithm.md`.

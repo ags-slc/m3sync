@@ -65,6 +65,7 @@ typeset -r  cf_current_state="${cf_dir}/current-state"
 typeset -r  cf_restore_state="${cf_dir}/restore-state"
 typeset -r  cf_delta="${cf_dir}/delta"
 typeset -r  cf_protected_list="${cf_dir}/protected-list"
+typeset -r  cf_tombstones="${cf_dir}/tombstones"
 typeset -r  backup_dir="${cf_dir}/backup"
 typeset -r  history_dir="${cf_dir}/changelog"
 typeset -r  lock_dir="${cf_dir}/lock"
@@ -435,6 +436,7 @@ prepare_sync() {
     mv "${new_state}" ${1}/${cf_current_state}
 
     get_delta ${1} > ${1}/${cf_delta}
+    update_tombstones ${1}
     get_protected_list ${1} | sort -u > ${1}/${cf_protected_list}
 
     if [[ "${is_dry_run}" -eq 1 ]]; then
@@ -451,6 +453,87 @@ prepare_sync() {
     rsync_opts="${exclude_opts} ${base_opts}${extra_opts}"
 
     log_msg debug "rsync_opts: ${rsync_opts}"
+}
+
+update_tombstones() {
+    # Fold this run's deletions into the persistent tombstones list,
+    # and clear any tombstones the user has intentionally re-added.
+    # Prune entries older than M3SYNC_TOMBSTONE_DAYS (default 30). See
+    # BUG-37.
+    #
+    # Input params:
+    # $1 - source directory
+    local src=$1
+    local tombfile="${src}/${cf_tombstones}"
+    local deltafile="${src}/${cf_delta}"
+    local now retention cutoff tmp
+    now=$(date +%s)
+    retention="${M3SYNC_TOMBSTONE_DAYS:-30}"
+    cutoff=$(( now - retention * 86400 ))
+
+    [ -f "${deltafile}" ] || return 0
+    touch "${tombfile}"
+
+    # Collect the set of paths re-added this cycle (diff lines starting
+    # with '>'). Tombstone entries matching any of these are cleared.
+    local readds="${tombfile}.readds"
+    grep '^> ' "${deltafile}" 2> /dev/null | cut -c3- > "${readds}" || true
+
+    # Collect newly-deleted paths ('<' lines). Excludes anything also
+    # present in readds (a path that was removed and re-added in the
+    # same cycle — leave it alone).
+    local deletes="${tombfile}.deletes"
+    grep '^< ' "${deltafile}" 2> /dev/null | cut -c3- | \
+        awk -v readds="${readds}" '
+            BEGIN { while ((getline r < readds) > 0) keep[r]=1 }
+            !($0 in keep) { print }
+        ' > "${deletes}" || true
+
+    # Rebuild the tombstones file:
+    #   - drop entries whose path was re-added this cycle
+    #   - drop entries older than cutoff
+    #   - append this cycle's new deletions with now as the timestamp
+    tmp="${tombfile}.new"
+    awk -F'\t' -v cutoff="${cutoff}" -v readds="${readds}" '
+        BEGIN { while ((getline r < readds) > 0) dropped[r]=1 }
+        !($1 in dropped) && ($2+0) >= cutoff { print }
+    ' "${tombfile}" > "${tmp}"
+    awk -v now="${now}" '{ printf "%s\t%s\n", $0, now }' "${deletes}" >> "${tmp}"
+    # Deduplicate on path while preserving the most recent timestamp.
+    sort -t'	' -k1,1 -k2,2nr "${tmp}" | awk -F'\t' '!seen[$1]++' > "${tombfile}"
+    rm -f "${tmp}" "${readds}" "${deletes}"
+}
+
+purge_tombstoned_paths_on_target() {
+    # For each live tombstone, if the target has the path, delete it on
+    # the target. Runs before leg 1 so the resurrected file is gone
+    # before rsync has a chance to pull it back to source.
+    #
+    # Input params:
+    # $1 - source directory
+    local src=$1
+    local tombfile="${src}/${cf_tombstones}"
+    local path
+
+    [ -s "${tombfile}" ] || return 0
+
+    cut -f1 "${tombfile}" | while IFS= read -r path; do
+        case "${path}" in
+            ''|*'*'*|*'?'*|*'['*) continue ;;
+        esac
+        # If the user has re-created the file on source, don't delete it
+        # from target; the tombstone will be cleared next run.
+        [ -e "${src}/${path}" ] && continue
+
+        if [ -n "${target_host}" ]; then
+            ssh "${target_host}" "test -e '${target_dir}/${path}' && rm -rf -- '${target_dir}/${path}'" 2> /dev/null || true
+        else
+            if [ -e "${target_dir}/${path}" ]; then
+                rm -rf -- "${target_dir}/${path}"
+                log_msg notice "tombstone: deleted resurrected ${path} on target"
+            fi
+        fi
+    done
 }
 
 conflict_name() {
@@ -660,6 +743,9 @@ main() {
         prepare_sync ${source_dir}
 
         if [[ "${mode}" = "full-duplex" ]]; then
+            # Remove any tombstoned path the peer has resurrected before
+            # leg 1 has a chance to pull it back (BUG-37).
+            purge_tombstoned_paths_on_target ${source_dir}
             sync_protected ${source_dir}
         fi
 
