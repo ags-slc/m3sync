@@ -22,7 +22,33 @@ laptop and a server when you control when each side is modified.
 
 ## Installation
 
-Drop the script somewhere on your `PATH` and mark it executable:
+### One-liner (recommended)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ags-slc/m3sync/master/install.sh | sh
+```
+
+This drops `m3sync` into `$HOME/.local/bin` by default and tells you to
+add that dir to your `PATH` if it isn't already. Pass options after
+`sh -s --`:
+
+```sh
+# install to a specific prefix
+curl -fsSL https://raw.githubusercontent.com/ags-slc/m3sync/master/install.sh | sh -s -- --prefix /usr/local/bin
+
+# pin to a tag or commit
+curl -fsSL https://raw.githubusercontent.com/ags-slc/m3sync/master/install.sh | sh -s -- --ref v1.0
+```
+
+The installer verifies the download starts with a shebang before
+replacing the target, and writes to a `.tmp` sidecar first so a
+failed download can't leave you with a half-written script. Inspect
+`install.sh` before running if you're unsure — it's short.
+
+### Manual
+
+`m3sync` is a single shell script; if you'd rather not pipe curl into
+sh, drop it somewhere on your `PATH` yourself:
 
 ```sh
 install -m 0755 m3sync /usr/local/bin/m3sync
