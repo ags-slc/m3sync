@@ -83,7 +83,8 @@ typeset -r  help_text="Usage:
     $program -h
 
 Options:
-    -c        Copy user .cvsignore to remote host.
+    -c        Enable rsync's cvs-exclude (-C) and copy the user's
+              .cvsignore to the remote host. Off by default.
     -d        Log debug messages to STDERR.
     -h        Show this help text.
     -n        Dry run only, do not sync. Implies -v.
@@ -369,7 +370,12 @@ prepare_sync() {
     # when -b is present. See detect_openrsync() and BUG-33.
     local    backup_flag="b"
     [[ "${is_openrsync}" -eq 1 ]] && backup_flag=
-    local -r base_opts="--timeout=${timeout} --delete -a${backup_flag}Cu"
+    # Gate rsync's -C (cvs-exclude) behind the -c flag. Formerly always on,
+    # which silently dropped .git/, *.o, *~, #*# and anything listed in an
+    # in-tree .cvsignore. See BUG-10.
+    local    cvs_flag=
+    [[ "${can_sync_cvsignore}" -eq 1 ]] && cvs_flag="C"
+    local -r base_opts="--timeout=${timeout} --delete -a${backup_flag}${cvs_flag}u"
     local -r exclude_opts="--exclude=${cf_dir}*"
     local    extra_opts=
 
