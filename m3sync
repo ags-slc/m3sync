@@ -768,15 +768,21 @@ main() {
             n  ) is_dry_run=1 ;;
             o  ) can_override=1 ;;
             v  ) is_verbose=1 ;;
-            \? ) mode="usage" ;;
+            \? ) mode="usage_error" ;;
         esac
     done
-    
+
     shift "$((OPTIND - 1))"
 
-    if [[ "${mode}" = "usage" || "$#" -lt 2 ]]; then
+    # Explicit exit codes: -h is a valid request (0); an invalid flag or
+    # missing arguments is a usage error (2, convention per sysexits).
+    if [[ "${mode}" = "usage" ]]; then
         printf '%s\n' "${help_text}"
-        exit
+        exit 0
+    fi
+    if [[ "${mode}" = "usage_error" || "$#" -lt 2 ]]; then
+        printf '%s\n' "${help_text}" >&2
+        exit 2
     fi
 
     require_tool rsync "install rsync (on macOS: 'brew install rsync' for GNU; the shipped openrsync is auto-detected)"
