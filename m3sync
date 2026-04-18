@@ -85,7 +85,9 @@ typeset -r  help_text="Usage:
 
 Options:
     -c        Enable rsync's cvs-exclude (-C) and copy the user's
-              .cvsignore to the remote host. Off by default.
+              .cvsignore to the remote host. Off by default. Note:
+              this will overwrite any existing ~/.cvsignore on the
+              remote host on every run (BUG-19).
     -d        Log debug messages to STDERR.
     -h        Show this help text.
     -n        Dry run only, do not sync. Implies -v.
@@ -307,6 +309,11 @@ get_lock() {
     #
     # Input params:
     # $1 - the base path of the lock directory
+    #
+    # Invariant: main() runs initialize_dir() on the source before calling
+    # get_lock(), so ${1}/${cf_dir} already exists. A plain (non -p) mkdir
+    # is intentional — it fails loudly if the control dir is ever absent,
+    # which would indicate a contract violation upstream (BUG-17).
 
     if mkdir "${1}/${lock_dir}"; then
         # The trap function cannot take params, set the global active_lock_dir
@@ -380,7 +387,10 @@ get_protected_list() {
     # Always protect the control files.
     printf '%s\n' "${cf_dir}*"
 
-    grep "[<|>]" "${1}/${cf_delta}" | colrm 1 2
+    # Plain diff prefixes added/removed lines with exactly '> ' / '< '.
+    # Anchor on that 2-char prefix so filenames containing '<', '>', or '|'
+    # don't get picked up as phantom change lines (BUG-15).
+    grep '^[<>] ' "${1}/${cf_delta}" | colrm 1 2
 
     # TODO: this will protect a file that is modified on the source but deleted
     # from the target within the same synchronization window. Is it even
@@ -785,7 +795,7 @@ main() {
         exit 2
     fi
 
-    require_tool rsync "install rsync (on macOS: 'brew install rsync' for GNU; the shipped openrsync is auto-detected)"
+    require_tool rsync "install rsync (macOS ships openrsync as /usr/bin/rsync, which works; m3sync auto-detects it)"
 
     if detect_openrsync; then
         is_openrsync=1

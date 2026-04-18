@@ -41,7 +41,7 @@
     rsync -ab --delete --backup-dir=".bak/ts" "$T/src/" "$T/dst/"
     ls "$T/dst"   # openrsync: keep.txt gone.txt   GNU rsync: keep.txt
     ```
-  - Suggested fix: detect openrsync at startup (`rsync --version | grep -q openrsync`); either (a) abort with a clear message pointing at `brew install rsync`, or (b) swap to `--delete-after` without `-b` and emulate backups via a pre-rsync `cp -a` of files about to be deleted. Long term: add a CI matrix with both GNU rsync and openrsync.
+  - Fix applied: `detect_openrsync` at startup sets `is_openrsync=1` when the banner matches. `base_opts` drops `-b` and `get_backup_path` returns empty under openrsync, so deletions propagate correctly. Openrsync remains supported as a first-class environment — `brew install rsync` is **not** required, it merely restores the per-run backup dir. Long-term follow-up: CI matrix with both GNU rsync and openrsync.
 
 - **[BUG-01] `get_backup_opts` always ignores the branch it just computed** — m3sync:285-306
   - What: The function picks between local (`${1}/${backup_path}`) and remote (`${backup_path}`) `--backup-dir` based on whether the receiver is remote, assigning `backup_opts` inside each branch. Then line 302 unconditionally overwrites: `backup_opts="--backup-dir=${backup_path}"` (no receiver prefix).

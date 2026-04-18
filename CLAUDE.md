@@ -32,10 +32,12 @@ context.
 ## Known environmental gotchas
 
 - macOS 13+ ships `openrsync` as `/usr/bin/rsync`. It is **not** feature
-  compatible with GNU rsync. `-b --backup-dir` + `--delete` silently drops
-  deletions. See `docs/FINDINGS-bugs.md` BUG-33. Run the suite on Linux with
-  GNU rsync, or `brew install rsync` locally and prepend
-  `/opt/homebrew/bin:/usr/local/bin` to PATH.
+  compatible with GNU rsync — notably, `-b --backup-dir` + `--delete`
+  silently drops deletions (BUG-33). m3sync auto-detects openrsync at
+  startup (`detect_openrsync` / `is_openrsync`) and degrades gracefully by
+  dropping `-b`. Everything else works under openrsync, including the
+  test suite. **No `brew install rsync` is required** — it just restores
+  the backup safety net for users who want it.
 
 ## Key files
 
