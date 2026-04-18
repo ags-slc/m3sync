@@ -102,3 +102,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# Claude Code local settings (auto-generated permissions)
+.claude/settings.local.json
