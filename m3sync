@@ -375,7 +375,12 @@ prepare_sync() {
     # in-tree .cvsignore. See BUG-10.
     local    cvs_flag=
     [[ "${can_sync_cvsignore}" -eq 1 ]] && cvs_flag="C"
-    local -r base_opts="--timeout=${timeout} --delete -a${backup_flag}${cvs_flag}u"
+    # No -u (update-only): the protected-list already resolves "who wins"
+    # for paths modified since last-run, and -u on the outbound leg would
+    # sabotage that by skipping a push whenever the target happens to have
+    # a newer mtime — leaving the two sides diverged indefinitely. See
+    # BUG-11.
+    local -r base_opts="--timeout=${timeout} --delete -a${backup_flag}${cvs_flag}"
     local -r exclude_opts="--exclude=${cf_dir}*"
     local    extra_opts=
 
