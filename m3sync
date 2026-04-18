@@ -231,18 +231,30 @@ get_lock() {
 }
 
 filtered_find() {
-    # Return the filtered list of directories, files and links.
+    # Return the filtered list of directories, files and links under $1,
+    # with the control directory pruned out. Any additional arguments are
+    # passed as extra find predicates (e.g. -newer FILE).
     #
     # Input params:
-    # $1 - the directory to traverse
-    # $@ - additional filters (optional)
+    # $1 - the directory to traverse (the search root)
+    # $@ - additional find predicates (optional)
+    #
+    # Uses path-scoped ! -path exclusions rather than a post-hoc grep so
+    # that (a) a file named e.g. 'notes-.m3sync.txt' is not mistakenly
+    # dropped (BUG-06), and (b) an empty result set does not cause the
+    # pipeline to exit non-zero and abort the caller under set -e (BUG-34).
 
-    local -r file_types="-type f -or -type d -or -type l"
-    local -r pattern="s;${1}/;;g"
+    local -r root="${1}"; shift
 
-    log_msg debug "filtered_find params: $@"
+    log_msg debug "filtered_find root=${root} extra=$*"
 
-    find $@ \( ${file_types} \) | sed ${pattern} | grep -v ${1} | grep -v ${cf_dir}
+    find "${root}" \
+        ! -path "${root}" \
+        ! -path "${root}/${cf_dir}" \
+        ! -path "${root}/${cf_dir}/*" \
+        \( -type f -o -type d -o -type l \) \
+        "$@" \
+        | sed "s;^${root}/;;"
 }
 
 get_current_state() {
