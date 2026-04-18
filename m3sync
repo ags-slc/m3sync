@@ -100,7 +100,7 @@ log_msg() {
     # $@ - messages to be logged
 
     local -r msg_type="${1}"; shift
-    local -r msg="$@"
+    local -r msg="$*"
 
     # Only log debug messages if debug is set.
     if [[ "${msg_type}" = "debug" && "${is_debug}" -eq 0 ]]; then
@@ -110,7 +110,7 @@ log_msg() {
     # Always log error messages, and other messages as configured.
     if [[ "${msg_type}" = "error" || "${msg_type}" = "debug" || "${is_verbose}" -eq 1 ]]; then
         local log_timestamp=$(date +'%Y-%m-%dT%H:%M:%S%z')
-        echo "[${log_timestamp}] ${program}: ${msg_type}: ${msg}" >&2
+        printf '[%s] %s: %s: %s\n' "${log_timestamp}" "${program}" "${msg_type}" "${msg}" >&2
     fi
 }
 
@@ -188,7 +188,7 @@ set_overrides() {
         # not leave the loop body with a non-zero exit status (which the
         # old '|| return 0' was silently masking — along with any real I/O
         # error on ${config_file}). Unreadable settings now propagate.
-        while read setting; do
+        while read -r setting; do
             set ${setting}
 
             case "${1}" in
@@ -328,7 +328,7 @@ get_protected_list() {
 
     log_msg debug "creating protected list"
     # Always protect the control files.
-    echo "${cf_dir}*"
+    printf '%s\n' "${cf_dir}*"
 
     grep "[<|>]" ${1}/${cf_delta} | colrm 1 2
 
@@ -380,9 +380,9 @@ get_backup_opts() {
         backup_opts="--backup-dir=${backup_path}"
     fi
 
-    log_msg debug ${backup_opts}
+    log_msg debug "${backup_opts}"
 
-    echo ${backup_opts}
+    printf '%s\n' "${backup_opts}"
 }
 
 prepare_sync() {
@@ -541,7 +541,7 @@ main() {
     shift "$((OPTIND - 1))"
 
     if [[ "${mode}" = "usage" || "$#" -lt 2 ]]; then
-        echo "${help_text}"
+        printf '%s\n' "${help_text}"
         exit
     fi
 
