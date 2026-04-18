@@ -232,12 +232,13 @@ is_initialized() {
     # Input params:
     # $1 - the directory to check
 
-    local -r cmd="stat ${1}/${cf_dir}"
+    local -r dir="${1}"
+    local -r check="${dir}/${cf_dir}"
 
-    if [[ "${1}" = "${source_dir}" || ! "${target_host}" ]]; then
-        ${cmd} 2> /dev/null 1> /dev/null # for portability pete's sake...
+    if [[ "${dir}" = "${source_dir}" || ! "${target_host}" ]]; then
+        [ -d "${check}" ]
     else
-        ssh ${target_host} "${cmd}" 2> /dev/null 1> /dev/null
+        ssh "${target_host}" "test -d '${check}'" 2> /dev/null 1> /dev/null
     fi
 }
 
@@ -247,17 +248,23 @@ initialize_dir() {
     # Input params:
     # $1 - the directory to initialize
 
-    local -r mkdirs="mkdir -p ${1}/${backup_dir} ${1}/${history_dir}"
-    local -r mkcfg="echo enabled true"
+    local -r dir="${1}"
+    local -r bk="${dir}/${backup_dir}"
+    local -r hist="${dir}/${history_dir}"
+    local -r settings="${dir}/${cf_settings}"
+    local -r lastrun="${dir}/${cf_last_run}"
 
-    if [[ "${1}" = "${source_dir}" || ! "${target_host}" ]]; then
-        ${mkdirs} && ${mkcfg} > ${1}/${cf_settings}
-        touch ${1}/${cf_last_run}
+    if [[ "${dir}" = "${source_dir}" || ! "${target_host}" ]]; then
+        mkdir -p "${bk}" "${hist}"
+        printf 'enabled true\n' > "${settings}"
+        touch "${lastrun}"
     else
-        ssh ${target_host} "${mkdirs} && ${mkcfg} > ${1}/${cf_settings}"
+        # Remote init: mirror the local sequence including the last-run
+        # touch that was previously missing (BUG-18).
+        ssh "${target_host}" "mkdir -p '${bk}' '${hist}' && printf 'enabled true\n' > '${settings}' && touch '${lastrun}'"
     fi
 
-    log_msg debug "initialized ${1}"
+    log_msg debug "initialized ${dir}"
 }
 
 release_lock() {
@@ -330,7 +337,7 @@ get_current_state() {
     # Input params:
     # $1 - the directory to traverse
 
-    filtered_find ${1}
+    filtered_find "${1}"
 }
 
 get_delta() {
@@ -339,9 +346,9 @@ get_delta() {
     # Input params:
     # $1 - the directory to examine
 
-    if [[ -f ${1}/${cf_previous_state} ]]; then
+    if [[ -f "${1}/${cf_previous_state}" ]]; then
         # We expect changes, so trap diff's exit code and return 0 instead.
-        diff ${1}/${cf_previous_state} ${1}/${cf_current_state} || return 0
+        diff "${1}/${cf_previous_state}" "${1}/${cf_current_state}" || return 0
     fi
 }
 
@@ -357,14 +364,14 @@ get_protected_list() {
     # Always protect the control files.
     printf '%s\n' "${cf_dir}*"
 
-    grep "[<|>]" ${1}/${cf_delta} | colrm 1 2
+    grep "[<|>]" "${1}/${cf_delta}" | colrm 1 2
 
     # TODO: this will protect a file that is modified on the source but deleted
     # from the target within the same synchronization window. Is it even
     # desired or necessary? m3sync is not intended for scenarios where the
     # target and the source are being concurrently modified... the model is one
     # of asynchronous modification.
-    filtered_find ${1} -newer ${1}/${cf_last_run}
+    filtered_find "${1}" -newer "${1}/${cf_last_run}"
 }
 
 restore_current_state() {
@@ -375,41 +382,44 @@ restore_current_state() {
     #
     # Input params:
     # $1 - the source directory of the sync
-    if [[ -f ${1}/${cf_previous_state} ]]; then
-        mv ${1}/${cf_previous_state} ${1}/${cf_current_state}
+    if [[ -f "${1}/${cf_previous_state}" ]]; then
+        mv "${1}/${cf_previous_state}" "${1}/${cf_current_state}"
     else
         # First-ever run: there was no prior current-state, so wipe.
-        rm -f ${1}/${cf_current_state}
+        rm -f "${1}/${cf_current_state}"
     fi
-    rm -f ${1}/${cf_delta} ${1}/${cf_protected_list}
+    rm -f "${1}/${cf_delta}" "${1}/${cf_protected_list}"
 }
 
-get_backup_opts() {
-    # Set the backup option strings for rsync usage.
+get_backup_path() {
+    # Return just the backup DIRECTORY path (a single string, may
+    # contain spaces). The caller wraps it as --backup-dir=... in a
+    # quoted expansion so we don't have to word-split an option flag
+    # that itself may contain spaces.
     #
     # Input params:
     # $1 - the receiving directory
 
-    # openrsync does not honor --delete with -b, so we skip backups entirely
-    # there; base_opts is already adjusted in prepare_sync (BUG-33).
+    # openrsync does not honor --delete with -b, so we skip backups
+    # entirely there; base_opts is already adjusted in prepare_sync
+    # (BUG-33). An empty return value signals "no backup dir".
     [[ "${is_openrsync}" -eq 1 ]] && return 0
 
-    local -r backup_path="${backup_dir}/${timestamp}"
-    local    backup_opts=
+    local -r rel="${backup_dir}/${timestamp}"
+    local    path=
 
     # If the receiver is local, anchor the backup path with an absolute
-    # prefix so rsync writes backups under the receiver's control dir. For
-    # a remote receiver, the relative form is resolved relative to the
-    # rsync destination root — also the receiver's control dir.
+    # prefix so rsync writes backups under the receiver's control dir.
+    # For a remote receiver, the relative form is resolved relative to
+    # the rsync destination root — also the receiver's control dir.
     if [[ "${1}" = "${source_dir}" || ! "${target_host}" ]]; then
-        backup_opts="--backup-dir=${1}/${backup_path}"
+        path="${1}/${rel}"
     else
-        backup_opts="--backup-dir=${backup_path}"
+        path="${rel}"
     fi
 
-    log_msg debug "${backup_opts}"
-
-    printf '%s\n' "${backup_opts}"
+    log_msg debug "backup path: ${path}"
+    printf '%s' "${path}"
 }
 
 prepare_sync() {
@@ -441,13 +451,13 @@ prepare_sync() {
     # state is unchanged and a subsequent override run sees the same
     # pre-abort conditions (BUG-02).
     local -r new_state="${1}/${cf_current_state}.new"
-    get_current_state ${1} > "${new_state}"
+    get_current_state "${1}" > "${new_state}"
 
     # BUG-02: if the fresh scan is empty but the last scan wasn't, the
     # source has been wiped out since last run. Propagating would delete
     # everything on the peer via --delete. Refuse unless explicitly
     # overridden with M3SYNC_ALLOW_EMPTY_SOURCE=1.
-    if [[ -s ${1}/${cf_current_state} && ! -s "${new_state}" \
+    if [[ -s "${1}/${cf_current_state}" && ! -s "${new_state}" \
           && "${M3SYNC_ALLOW_EMPTY_SOURCE:-0}" -ne 1 ]]; then
         log_msg error "source is empty but previously had files; refusing to propagate wholesale deletion."
         log_msg error "override with M3SYNC_ALLOW_EMPTY_SOURCE=1 if this is intentional."
@@ -456,14 +466,14 @@ prepare_sync() {
     fi
 
     # Commit the rotation now that we've passed the guard.
-    if [[ -f ${1}/${cf_current_state} ]]; then
-        mv ${1}/${cf_current_state} ${1}/${cf_previous_state}
+    if [[ -f "${1}/${cf_current_state}" ]]; then
+        mv "${1}/${cf_current_state}" "${1}/${cf_previous_state}"
     fi
-    mv "${new_state}" ${1}/${cf_current_state}
+    mv "${new_state}" "${1}/${cf_current_state}"
 
-    get_delta ${1} > ${1}/${cf_delta}
-    update_tombstones ${1}
-    get_protected_list ${1} | sort -u > ${1}/${cf_protected_list}
+    get_delta "${1}" > "${1}/${cf_delta}"
+    update_tombstones "${1}"
+    get_protected_list "${1}" | sort -u > "${1}/${cf_protected_list}"
 
     if [[ "${is_dry_run}" -eq 1 ]]; then
         extra_opts="nv"
@@ -655,10 +665,16 @@ sync_protected() {
     # Input params:
     # $1 - the source directory of the sync
 
-    local -r protect_opts="--exclude-from=${1}/${cf_protected_list}"
-    local -r backup_opts=$(get_backup_opts ${1})
+    local -r plist="${1}/${cf_protected_list}"
+    local -r bpath=$(get_backup_path "${1}")
 
-    rsync ${protect_opts} ${backup_opts} ${rsync_opts} ${target_uri}/ ${source_dir}
+    if [ -n "${bpath}" ]; then
+        rsync ${rsync_opts} "--exclude-from=${plist}" "--backup-dir=${bpath}" \
+              "${target_uri}/" "${source_dir}"
+    else
+        rsync ${rsync_opts} "--exclude-from=${plist}" \
+              "${target_uri}/" "${source_dir}"
+    fi
 }
 
 record_history() {
@@ -668,13 +684,13 @@ record_history() {
     # Input params:
     # $1 - directory to track
 
-    local -r this_history_dir=${1}/${history_dir}/${timestamp}
+    local -r this_history_dir="${1}/${history_dir}/${timestamp}"
 
-    if [[ -f ${1}/${cf_previous_state} ]]; then
+    if [[ -f "${1}/${cf_previous_state}" ]]; then
         # TODO: fix variable names to avoid duplication
-        mkdir -p ${this_history_dir}
-        mv ${1}/${cf_previous_state} ${this_history_dir}/previous-state
-        mv ${1}/${cf_delta} ${this_history_dir}/delta
+        mkdir -p "${this_history_dir}"
+        mv "${1}/${cf_previous_state}" "${this_history_dir}/previous-state"
+        mv "${1}/${cf_delta}" "${this_history_dir}/delta"
     fi
 }
 
@@ -695,11 +711,16 @@ sync() {
     # Input params:
     # $1 - the source directory of the sync
 
-    local -r backup_opts=$(get_backup_opts ${target_dir})
+    local -r bpath=$(get_backup_path "${target_dir}")
 
     [[ "${can_sync_cvsignore}" -eq 1 ]] && sync_cvsignore
     mark_conflicts_on_target "${source_dir}"
-    rsync ${backup_opts} ${rsync_opts} ${source_dir}/ ${target_uri}
+    if [ -n "${bpath}" ]; then
+        rsync ${rsync_opts} "--backup-dir=${bpath}" \
+              "${source_dir}/" "${target_uri}"
+    else
+        rsync ${rsync_opts} "${source_dir}/" "${target_uri}"
+    fi
 }
 
 finalize_sync() {
@@ -710,14 +731,14 @@ finalize_sync() {
     # $1 - the source directory of the sync
 
     if [[ "${is_dry_run}" -eq 1 ]]; then
-        restore_current_state ${1}
+        restore_current_state "${1}"
     else
-        if ! is_initialized ${target_dir}; then
-            initialize_dir ${target_dir}
+        if ! is_initialized "${target_dir}"; then
+            initialize_dir "${target_dir}"
         fi
 
-        record_history ${source_dir}
-        touch ${1}/${cf_last_run}
+        record_history "${source_dir}"
+        touch "${1}/${cf_last_run}"
     fi
 }
 
@@ -751,13 +772,13 @@ main() {
     parse_sync_params "$@"
 
     if [[ "${can_override}" -eq 1 ]]; then
-        set_overrides ${source_dir} ${cf_settings}
+        set_overrides "${source_dir}" "${cf_settings}"
     fi
 
     if [[ "${is_enabled}" -eq 1 ]]; then
-        if ! is_initialized ${source_dir}; then
-            initialize_dir ${source_dir}
-        elif is_initialized ${target_dir}; then
+        if ! is_initialized "${source_dir}"; then
+            initialize_dir "${source_dir}"
+        elif is_initialized "${target_dir}"; then
             # Both source and target are initialized; enter full-duplex mode.
             mode="full-duplex"
         fi
@@ -765,18 +786,18 @@ main() {
         log_msg debug "mode:${mode} enabled:${is_enabled} dry-run:${is_dry_run} verbose:${is_verbose}"
         log_msg debug "sync ${source_dir} to ${target_uri}"
 
-        get_lock ${source_dir}
-        prepare_sync ${source_dir}
+        get_lock "${source_dir}"
+        prepare_sync "${source_dir}"
 
         if [[ "${mode}" = "full-duplex" ]]; then
             # Remove any tombstoned path the peer has resurrected before
             # leg 1 has a chance to pull it back (BUG-37).
-            purge_tombstoned_paths_on_target ${source_dir}
-            sync_protected ${source_dir}
+            purge_tombstoned_paths_on_target "${source_dir}"
+            sync_protected "${source_dir}"
         fi
 
-        sync ${source_dir} ${target_dir}
-        finalize_sync ${source_dir}
+        sync "${source_dir}"
+        finalize_sync "${source_dir}"
     else
         log_msg error "Sync is not enabled for ${source_dir}."
     fi
