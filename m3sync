@@ -122,6 +122,23 @@ detect_openrsync() {
     rsync --version 2> /dev/null | head -n 1 | grep -q openrsync
 }
 
+validate_path_safety() {
+    # Refuse paths containing shell metacharacters. These would be
+    # interpreted by the remote shell when m3sync runs ssh commands with
+    # the path interpolated (is_initialized, initialize_dir). A
+    # legitimate sync directory should not contain any of these. See
+    # BUG-03.
+    #
+    # Input params:
+    # $1 - a human label for the error message (e.g. "target path")
+    # $2 - the path to check
+    case "$2" in
+        *[\$\`\;\|\&\(\)\<\>\"\'\\\*\?]* )
+            log_msg error "$1 contains unsafe characters and is refused: $2"
+            exit 1 ;;
+    esac
+}
+
 parse_sync_params() {
     # Parse the sync params and set the global source and target locations for
     # syncing.
@@ -146,6 +163,14 @@ parse_sync_params() {
     fi
 
     IFS=$oifs
+
+    # Reject any unsafe characters before these values are ever
+    # interpolated into an ssh command string.
+    validate_path_safety "source path" "${source_dir}"
+    validate_path_safety "target path" "${target_dir}"
+    if [ -n "${target_host}" ]; then
+        validate_path_safety "target host" "${target_host}"
+    fi
 }
 
 set_overrides() {
