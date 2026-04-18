@@ -147,23 +147,49 @@ parse_sync_params() {
     # Input params:
     # $1 - source directory
     # $2 - target URI
+    #
+    # Recognized forms of the target URI:
+    #   /local/path                    — local
+    #   relative/path                  — local
+    #   ./foo:bar  or  /tmp/foo:bar    — local (slash precedes the first colon)
+    #   host:path                      — remote via ssh
+    #   user@host:path                 — remote via ssh
+    #   user@[ipv6]:path               — remote via ssh (IPv6 bracket form)
+    #   rsync://...                    — refused; rsync-daemon targets are
+    #                                    not yet supported because
+    #                                    is_initialized / initialize_dir
+    #                                    use ssh.
 
     source_dir=${1}; shift
     target_uri=${1}; shift
 
-    IFS=":"
-
-    # Split the URI into an array, using `set` for maximum portability.
-    set ${target_uri}
-
-    if [[ $# -lt 2 ]]; then
-        target_dir="${1}"
-    else
-        target_host="${1}"
-        target_dir="${2}"
-    fi
-
-    IFS=$oifs
+    case "${target_uri}" in
+        rsync://*)
+            log_msg error "rsync:// URLs are not supported yet: ${target_uri}"
+            log_msg error "use 'host:path' for remote targets over ssh"
+            exit 1 ;;
+        *\]:*)
+            # IPv6 bracket form: user@[addr]:path. Split on ']:'.
+            target_host="${target_uri%%\]:*}]"
+            target_dir="${target_uri#*\]:}" ;;
+        *:*)
+            # Plain colon present. If the segment before the first
+            # colon contains a slash, the colon is part of a local
+            # path; otherwise it's a host:path.
+            _first="${target_uri%%:*}"
+            case "${_first}" in
+                */*)
+                    target_host=""
+                    target_dir="${target_uri}" ;;
+                *)
+                    target_host="${_first}"
+                    target_dir="${target_uri#*:}" ;;
+            esac
+            unset _first ;;
+        *)
+            target_host=""
+            target_dir="${target_uri}" ;;
+    esac
 
     # Reject any unsafe characters before these values are ever
     # interpolated into an ssh command string.
