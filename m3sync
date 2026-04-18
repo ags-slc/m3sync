@@ -32,7 +32,10 @@ set -e
 #
 typeset -r  program="${0##*/}"
 typeset -r  oifs=$IFS
-typeset -r  timestamp=$(date '+%Y%m%d%H%M')
+# Second precision plus PID so two runs in the same second still produce
+# distinct changelog/<ts>/ and backup/<ts>/ entries. Not readonly so
+# retry/resume paths can re-derive it if ever needed (BUG-05, BUG-13).
+typeset     timestamp=$(date '+%Y%m%d%H%M%S').$$
 
 #
 # Option and parameter globals.
