@@ -71,7 +71,6 @@ typeset     active_lock_dir=
 # Other globals.
 #
 typeset     rsync_opts=
-typeset     backup_opts=
 
 #
 # Usage.
@@ -317,15 +316,16 @@ get_backup_opts() {
     local -r backup_path="${backup_dir}/${timestamp}"
     local    backup_opts=
 
-    # If this is a local sync, include the receiving directory in the backup
-    # path.
+    # If the receiver is local, anchor the backup path with an absolute
+    # prefix so rsync writes backups under the receiver's control dir. For
+    # a remote receiver, the relative form is resolved relative to the
+    # rsync destination root — also the receiver's control dir.
     if [[ "${1}" = "${source_dir}" || ! "${target_host}" ]]; then
         backup_opts="--backup-dir=${1}/${backup_path}"
     else
         backup_opts="--backup-dir=${backup_path}"
     fi
 
-    backup_opts="--backup-dir=${backup_path}"
     log_msg debug ${backup_opts}
 
     echo ${backup_opts}
