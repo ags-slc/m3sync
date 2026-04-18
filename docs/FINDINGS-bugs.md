@@ -5,6 +5,18 @@
 
 ## Critical (data loss / correctness)
 
+- **[BUG-34] `filtered_find` pipeline exits 1 when no user files match, aborting the script under `set -e`** — m3sync:235
+  - What: `find ... | sed ... | grep -v X | grep -v Y`. On an empty source tree (or one where the only content is inside `.m3sync/`), `grep -v` sees no lines matching anything, exits 1, and since the pipeline's exit code is the last command's, the whole pipeline exits 1. `get_current_state`'s only statement is `filtered_find`, so it returns 1. The caller is `get_current_state ${1} > ${1}/${cf_current_state}`. Under `set -e`, the script aborts before `get_delta` / `get_protected_list` / `sync_protected` / `sync` can run.
+  - Impact: if the user deletes the last file from the source, running m3sync silently dies mid-flight. The target keeps all its files forever, with no deletion propagating, and no error surfaced to the user (`set -e` exits 0-ishly from the top level with the lock released).
+  - Repro:
+    ```sh
+    T=$(mktemp -d); mkdir -p "$T/s" "$T/d"
+    echo one > "$T/s/only.txt"; ./m3sync "$T/s" "$T/d"; ./m3sync "$T/s" "$T/d"
+    rm "$T/s/only.txt"; ./m3sync -dv "$T/s" "$T/d"
+    ls "$T/d"        # only.txt still there
+    ```
+  - Suggested fix: two independent fixes both helpful. (a) Make `filtered_find` tolerant of empty pipelines: `grep -v ... || true` on the last grep, or replace both `grep -v` with a single `awk '!/pattern/'` that returns 0 on empty. (b) Better: replace the double-grep with a path-scoped `find` predicate (`find "${1}" -not -path '*/.m3sync*' \( -type f -o -type d -o -type l \)`) — simultaneously fixes BUG-06 (`notes-m3sync.txt` false-positive) and BUG-34.
+
 - **[BUG-33] openrsync on macOS silently drops `--delete` when `-b --backup-dir` is also passed** — environmental, affects m3sync:314
   - What: macOS 13+ ships `openrsync` (BSD-licensed replacement) as `/usr/bin/rsync` — the banner reads `openrsync: protocol version 29 / rsync version 2.6.9 compatible`. With `rsync -ab --delete --backup-dir=<dir>`, openrsync does **not** delete extraneous files on the destination and does **not** populate the backup dir. `rsync -a --delete` alone works correctly.
   - Impact: all delete-propagation on macOS-to-macOS and anything-to-macOS is broken. This is the root cause of `tests/test_full_duplex_delete_source` and `tests/test_full_duplex_delete_target` failing on the author's machine. Repro in 8 lines:

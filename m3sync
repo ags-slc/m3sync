@@ -41,6 +41,8 @@ typeset     mode="mirror"
 typeset -i  is_enabled=1
 typeset -i  is_dry_run=0
 typeset -i  is_verbose=0
+typeset -i  is_debug=0
+typeset -i  is_openrsync=0
 typeset -i  can_override=0
 typeset -i  can_sync_cvsignore=0
 typeset -ir timeout=15
@@ -107,6 +109,14 @@ log_msg() {
         local log_timestamp=$(date +'%Y-%m-%dT%H:%M:%S%z')
         echo "[${log_timestamp}] ${program}: ${msg_type}: ${msg}" >&2
     fi
+}
+
+detect_openrsync() {
+    # macOS 13+ ships openrsync (BSD-licensed) as /usr/bin/rsync. openrsync
+    # silently fails to honor --delete when combined with -b/--backup-dir,
+    # causing deletions to not propagate. Detect and degrade gracefully by
+    # disabling backups (rsync -b). See docs/FINDINGS-bugs.md BUG-33.
+    rsync --version 2> /dev/null | head -n 1 | grep -q openrsync
 }
 
 parse_sync_params() {
@@ -288,6 +298,10 @@ get_backup_opts() {
     # Input params:
     # $1 - the receiving directory
 
+    # openrsync does not honor --delete with -b, so we skip backups entirely
+    # there; base_opts is already adjusted in prepare_sync (BUG-33).
+    [[ "${is_openrsync}" -eq 1 ]] && return 0
+
     local -r backup_path="${backup_dir}/${timestamp}"
     local    backup_opts=
 
@@ -311,7 +325,11 @@ prepare_sync() {
     # Input params:
     # $1 - the source directory of the sync
 
-    local -r base_opts="--timeout=${timeout} --delete -abCu"
+    # Omit rsync's -b (backup) under openrsync, which silently drops --delete
+    # when -b is present. See detect_openrsync() and BUG-33.
+    local    backup_flag="b"
+    [[ "${is_openrsync}" -eq 1 ]] && backup_flag=
+    local -r base_opts="--timeout=${timeout} --delete -a${backup_flag}Cu"
     local -r exclude_opts="--exclude=${cf_dir}*"
     local    extra_opts=
 
@@ -429,9 +447,14 @@ main() {
         exit
     fi
 
+    if detect_openrsync; then
+        is_openrsync=1
+        log_msg notice "openrsync detected: backups disabled (BUG-33)"
+    fi
+
     # Establish the source and target parameters.
     parse_sync_params "$@"
-    
+
     if [[ "${can_override}" -eq 1 ]]; then
         set_overrides ${source_dir} ${cf_settings}
     fi
