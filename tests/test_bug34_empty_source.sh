@@ -12,7 +12,10 @@ run_sync
 run_sync
 
 # Delete the last user file. Source is now user-empty (.m3sync remains).
+# Pass the safety override (BUG-02) because this is an intentional wipe.
 rm "${SRC}/only.txt"
+export M3SYNC_ALLOW_EMPTY_SOURCE=1
 run_sync
+unset M3SYNC_ALLOW_EMPTY_SOURCE
 assert_equal "${RUN_RC}" "0" || exit 1
 assert_file_missing "${DST}/only.txt" || exit 1

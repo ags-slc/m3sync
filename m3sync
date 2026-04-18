@@ -350,11 +350,31 @@ prepare_sync() {
     local -r exclude_opts="--exclude=${cf_dir}*"
     local    extra_opts=
 
+    # Scan into a sidecar first so the guard can run before we commit the
+    # previous-/current-state rotation. If the guard fires and we exit,
+    # state is unchanged and a subsequent override run sees the same
+    # pre-abort conditions (BUG-02).
+    local -r new_state="${1}/${cf_current_state}.new"
+    get_current_state ${1} > "${new_state}"
+
+    # BUG-02: if the fresh scan is empty but the last scan wasn't, the
+    # source has been wiped out since last run. Propagating would delete
+    # everything on the peer via --delete. Refuse unless explicitly
+    # overridden with M3SYNC_ALLOW_EMPTY_SOURCE=1.
+    if [[ -s ${1}/${cf_current_state} && ! -s "${new_state}" \
+          && "${M3SYNC_ALLOW_EMPTY_SOURCE:-0}" -ne 1 ]]; then
+        log_msg error "source is empty but previously had files; refusing to propagate wholesale deletion."
+        log_msg error "override with M3SYNC_ALLOW_EMPTY_SOURCE=1 if this is intentional."
+        rm -f "${new_state}"
+        exit 1
+    fi
+
+    # Commit the rotation now that we've passed the guard.
     if [[ -f ${1}/${cf_current_state} ]]; then
         mv ${1}/${cf_current_state} ${1}/${cf_previous_state}
     fi
+    mv "${new_state}" ${1}/${cf_current_state}
 
-    get_current_state ${1} > ${1}/${cf_current_state}
     get_delta ${1} > ${1}/${cf_delta}
     get_protected_list ${1} | sort -u > ${1}/${cf_protected_list}
 
