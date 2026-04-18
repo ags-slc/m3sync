@@ -315,7 +315,20 @@ get_protected_list() {
 }
 
 restore_current_state() {
-    mv ${1}/${cf_restore_state} ${1}/${cf_current_state}
+    # Undo the current-/previous-state rotation done by prepare_sync. Called
+    # only after a dry-run so the on-disk state looks identical to what
+    # was there before the run. The old current-state is now in
+    # previous-state (from the rotation); put it back.
+    #
+    # Input params:
+    # $1 - the source directory of the sync
+    if [[ -f ${1}/${cf_previous_state} ]]; then
+        mv ${1}/${cf_previous_state} ${1}/${cf_current_state}
+    else
+        # First-ever run: there was no prior current-state, so wipe.
+        rm -f ${1}/${cf_current_state}
+    fi
+    rm -f ${1}/${cf_delta} ${1}/${cf_protected_list}
 }
 
 get_backup_opts() {
@@ -390,7 +403,9 @@ prepare_sync() {
 
     if [[ "${is_dry_run}" -eq 1 ]]; then
         extra_opts="nv"
-        cp ${1}/${cf_current_state} ${1}/${cf_restore_state}
+        # No need to snapshot current-state here; restore_current_state
+        # (called from finalize_sync) reverses the rotation by moving
+        # previous-state back to current-state.
     fi
 
     if [[ "${is_verbose}" -eq 1 && "${is_dry_run}" -eq 0 ]]; then

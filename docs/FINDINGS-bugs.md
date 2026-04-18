@@ -5,6 +5,11 @@
 
 ## Critical (data loss / correctness)
 
+- **[BUG-35] Dry-run leaves mutated state files on disk** — m3sync:393 (pre-fix)
+  - What: `prepare_sync` rotated `current-state` into `previous-state`, wrote the new scan as `current-state`, then (for dry-run) `cp current-state → restore-state`. `finalize_sync`'s dry-run path then `mv restore-state → current-state` — which restored the *new* state over itself. The "restore" was a no-op; every dry-run permanently advanced the state machine one step.
+  - Impact: a user running `m3sync -n` intending to preview a change saw `b.txt` absent from target (good) but `b.txt` appeared in `current-state` on disk (bad). Next non-dry-run's delta would then miss the change.
+  - Suggested fix: reverse the rotation in `restore_current_state`: move `previous-state` back to `current-state` and delete the ephemeral `delta`/`protected-list` files. Exercised by `tests/test_dry_run_no_state.sh`.
+
 - **[BUG-34] `filtered_find` pipeline exits 1 when no user files match, aborting the script under `set -e`** — m3sync:235
   - What: `find ... | sed ... | grep -v X | grep -v Y`. On an empty source tree (or one where the only content is inside `.m3sync/`), `grep -v` sees no lines matching anything, exits 1, and since the pipeline's exit code is the last command's, the whole pipeline exits 1. `get_current_state`'s only statement is `filtered_find`, so it returns 1. The caller is `get_current_state ${1} > ${1}/${cf_current_state}`. Under `set -e`, the script aborts before `get_delta` / `get_protected_list` / `sync_protected` / `sync` can run.
   - Impact: if the user deletes the last file from the source, running m3sync silently dies mid-flight. The target keeps all its files forever, with no deletion propagating, and no error surfaced to the user (`set -e` exits 0-ishly from the top level with the lock released).
