@@ -115,6 +115,22 @@ log_msg() {
     fi
 }
 
+require_tool() {
+    # Fail fast with a clear error if a required command is not on PATH.
+    # Used for preflight so a missing rsync (or ssh for remote targets)
+    # surfaces before we take the lock and start mutating state.
+    # See BUG-29.
+    #
+    # Input params:
+    # $1 - the command name to require
+    # $2 - human-readable remediation hint
+    if ! command -v "$1" > /dev/null 2>&1; then
+        log_msg error "required command not found: $1"
+        log_msg error "$2"
+        exit 1
+    fi
+}
+
 detect_openrsync() {
     # macOS 13+ ships openrsync (BSD-licensed) as /usr/bin/rsync. openrsync
     # silently fails to honor --delete when combined with -b/--backup-dir,
@@ -763,6 +779,8 @@ main() {
         exit
     fi
 
+    require_tool rsync "install rsync (on macOS: 'brew install rsync' for GNU; the shipped openrsync is auto-detected)"
+
     if detect_openrsync; then
         is_openrsync=1
         log_msg notice "openrsync detected: backups disabled (BUG-33)"
@@ -770,6 +788,11 @@ main() {
 
     # Establish the source and target parameters.
     parse_sync_params "$@"
+
+    # ssh is only needed for remote targets; require it only then.
+    if [ -n "${target_host}" ]; then
+        require_tool ssh "install ssh (required for remote targets)"
+    fi
 
     if [[ "${can_override}" -eq 1 ]]; then
         set_overrides "${source_dir}" "${cf_settings}"
