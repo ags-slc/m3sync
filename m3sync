@@ -453,6 +453,93 @@ prepare_sync() {
     log_msg debug "rsync_opts: ${rsync_opts}"
 }
 
+conflict_name() {
+    # Return a Syncthing-style conflict-sibling name for a path. The
+    # marker is inserted between the basename stem and the extension,
+    # or appended if there is no extension.
+    #
+    # Input params:
+    # $1 - the relative path
+    # $2 - a timestamp string (typically YYYYMMDD-HHMMSS)
+    # $3 - a short device/host identifier
+    local path=$1 ts=$2 host=$3
+    local dir base stem ext
+    case "${path}" in
+        */*) dir="${path%/*}/"; base="${path##*/}" ;;
+        *)   dir=""; base="${path}" ;;
+    esac
+    case "${base}" in
+        *.*) ext=".${base##*.}"; stem="${base%.*}" ;;
+        *)   ext=""; stem="${base}" ;;
+    esac
+    printf '%s%s.sync-conflict-%s-%s%s\n' "${dir}" "${stem}" "${ts}" "${host}" "${ext}"
+}
+
+compute_conflict_list() {
+    # Emit the subset of the protected-list where the target has the
+    # same path with different content — i.e. both sides edited the
+    # file since the last sync. Uses cksum (POSIX CRC-32), which is
+    # plenty for divergence detection (not cryptographic).
+    #
+    # Input params:
+    # $1 - source directory (holds the protected-list)
+    local src=$1
+    local path local_sum remote_sum
+    local plist="${src}/${cf_protected_list}"
+
+    [ -s "${plist}" ] || return 0
+
+    while IFS= read -r path; do
+        case "${path}" in
+            ''|*'*'*|*'?'*|*'['*) continue ;;
+        esac
+        [ -f "${src}/${path}" ] || continue
+        if [ -n "${target_host}" ]; then
+            ssh "${target_host}" "[ -f '${target_dir}/${path}' ]" 2> /dev/null || continue
+            remote_sum=$(ssh "${target_host}" "cksum < '${target_dir}/${path}'" 2> /dev/null | awk '{print $1}')
+        else
+            [ -f "${target_dir}/${path}" ] || continue
+            remote_sum=$(cksum < "${target_dir}/${path}" 2> /dev/null | awk '{print $1}')
+        fi
+        local_sum=$(cksum < "${src}/${path}" 2> /dev/null | awk '{print $1}')
+        if [ "${local_sum}" != "${remote_sum}" ]; then
+            printf '%s\n' "${path}"
+        fi
+    done < "${plist}"
+}
+
+mark_conflicts_on_target() {
+    # For each path where both sides diverged since the last sync,
+    # preserve the target's version under a Syncthing-style conflict
+    # name and mirror that sibling back to the source so both sides end
+    # up showing the loss. The subsequent rsync push then lands
+    # source's winning version at the canonical path. See BUG-36.
+    #
+    # Input params:
+    # $1 - source directory
+    local src=$1
+    local conflicts ts host path cname
+
+    conflicts=$(compute_conflict_list "${src}")
+    [ -z "${conflicts}" ] && return 0
+
+    ts=$(date '+%Y%m%d-%H%M%S')
+    host=$(hostname -s 2> /dev/null || hostname | cut -d. -f1)
+
+    printf '%s\n' "${conflicts}" | while IFS= read -r path; do
+        [ -z "${path}" ] && continue
+        cname=$(conflict_name "${path}" "${ts}" "${host}")
+        log_msg notice "conflict on ${path}; preserving target version as ${cname}"
+        if [ -n "${target_host}" ]; then
+            rsync -a "${target_uri}/${path}" "${src}/${cname}" 2> /dev/null
+            ssh "${target_host}" "mv -- '${target_dir}/${path}' '${target_dir}/${cname}'"
+        else
+            cp -- "${target_dir}/${path}" "${src}/${cname}"
+            mv -- "${target_dir}/${path}" "${target_dir}/${cname}"
+        fi
+    done
+}
+
 sync_protected() {
     # Sync updates from the $target_dir, while masking source updates.
     #
@@ -502,6 +589,7 @@ sync() {
     local -r backup_opts=$(get_backup_opts ${target_dir})
 
     [[ "${can_sync_cvsignore}" -eq 1 ]] && sync_cvsignore
+    mark_conflicts_on_target "${source_dir}"
     rsync ${backup_opts} ${rsync_opts} ${source_dir}/ ${target_uri}
 }
 

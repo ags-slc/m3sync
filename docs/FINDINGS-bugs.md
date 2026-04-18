@@ -5,6 +5,11 @@
 
 ## Critical (data loss / correctness)
 
+- **[BUG-36] Conflicts silently buried in `.m3sync/backup/<ts>/`** — m3sync:sync (pre-fix)
+  - What: when both sides modify the same path between runs, the protected-list picks source as the winner, and the target's losing version gets moved into `.m3sync/backup/<ts>/` by rsync's `-b` (when using GNU rsync) or simply overwritten (openrsync, per BUG-33). Users had no visible signal that a conflict happened. By the time they noticed the divergence days later, the backup directory was buried under unrelated runs and often never checked.
+  - Impact: Syncthing-style silent data loss. Exactly scenario B in `docs/FINDINGS-algorithm.md`.
+  - Suggested fix: before the outbound rsync, intersect the protected-list with "files the target has with different content" (`cksum` comparison), and for each hit rename the target's version to `<stem>.sync-conflict-<YYYYMMDD>-<HHMMSS>-<host><ext>` (Syncthing convention). Mirror the conflict sibling back to the source so both sides see the loss. Works under both GNU rsync and openrsync because the rename happens out-of-band — not via `-b`.
+
 - **[BUG-35] Dry-run leaves mutated state files on disk** — m3sync:393 (pre-fix)
   - What: `prepare_sync` rotated `current-state` into `previous-state`, wrote the new scan as `current-state`, then (for dry-run) `cp current-state → restore-state`. `finalize_sync`'s dry-run path then `mv restore-state → current-state` — which restored the *new* state over itself. The "restore" was a no-op; every dry-run permanently advanced the state machine one step.
   - Impact: a user running `m3sync -n` intending to preview a change saw `b.txt` absent from target (good) but `b.txt` appeared in `current-state` on disk (bad). Next non-dry-run's delta would then miss the change.
