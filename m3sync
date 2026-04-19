@@ -31,11 +31,11 @@ set -e
 # Shell-related globals.
 #
 typeset -r  program="${0##*/}"
-typeset -r  oifs=$IFS
 # Second precision plus PID so two runs in the same second still produce
 # distinct changelog/<ts>/ and backup/<ts>/ entries. Not readonly so
 # retry/resume paths can re-derive it if ever needed (BUG-05, BUG-13).
-typeset     timestamp=$(date '+%Y%m%d%H%M%S').$$
+typeset     timestamp
+timestamp="$(date '+%Y%m%d%H%M%S').$$"
 
 #
 # Option and parameter globals.
@@ -62,7 +62,6 @@ typeset -r  cf_settings="${cf_dir}/settings"
 typeset -r  cf_last_run="${cf_dir}/last-run"
 typeset -r  cf_previous_state="${cf_dir}/previous-state"
 typeset -r  cf_current_state="${cf_dir}/current-state"
-typeset -r  cf_restore_state="${cf_dir}/restore-state"
 typeset -r  cf_delta="${cf_dir}/delta"
 typeset -r  cf_protected_list="${cf_dir}/protected-list"
 typeset -r  cf_tombstones="${cf_dir}/tombstones"
@@ -112,7 +111,8 @@ log_msg() {
 
     # Always log error messages, and other messages as configured.
     if [[ "${msg_type}" = "error" || "${msg_type}" = "debug" || "${is_verbose}" -eq 1 ]]; then
-        local log_timestamp=$(date +'%Y-%m-%dT%H:%M:%S%z')
+        local log_timestamp
+        log_timestamp=$(date +'%Y-%m-%dT%H:%M:%S%z')
         printf '[%s] %s: %s: %s\n' "${log_timestamp}" "${program}" "${msg_type}" "${msg}" >&2
     fi
 }
@@ -234,6 +234,9 @@ set_overrides() {
         # old '|| return 0' was silently masking — along with any real I/O
         # error on ${config_file}). Unreadable settings now propagate.
         while read -r setting; do
+            # Intentional unquoted expansion: we rely on IFS-based word
+            # splitting to turn 'key value' into positional params.
+            # shellcheck disable=SC2086
             set ${setting}
 
             case "${1}" in
@@ -256,6 +259,9 @@ is_initialized() {
     if [[ "${dir}" = "${source_dir}" || ! "${target_host}" ]]; then
         [ -d "${check}" ]
     else
+        # ${check} is expanded locally, not on the remote: we've already
+        # rejected unsafe characters via validate_path_safety (BUG-03).
+        # shellcheck disable=SC2029
         ssh "${target_host}" "test -d '${check}'" 2> /dev/null 1> /dev/null
     fi
 }
@@ -278,7 +284,9 @@ initialize_dir() {
         touch "${lastrun}"
     else
         # Remote init: mirror the local sequence including the last-run
-        # touch that was previously missing (BUG-18).
+        # touch that was previously missing (BUG-18). Paths are expanded
+        # locally; validate_path_safety ran against target_dir (BUG-03).
+        # shellcheck disable=SC2029
         ssh "${target_host}" "mkdir -p '${bk}' '${hist}' && printf 'enabled true\n' > '${settings}' && touch '${lastrun}'"
     fi
 
@@ -587,11 +595,14 @@ purge_tombstoned_paths_on_target() {
         # from target; the tombstone will be cleared next run.
         [ -e "${src}/${path}" ] && continue
 
+        # -n protects the enclosing 'while read' loop: without it, ssh
+        # would read from our stdin and consume the rest of the tombstone
+        # list. The :? guards against accidentally expanding to '/'.
         if [ -n "${target_host}" ]; then
-            ssh "${target_host}" "test -e '${target_dir}/${path}' && rm -rf -- '${target_dir}/${path}'" 2> /dev/null || true
+            ssh -n "${target_host}" "test -e '${target_dir:?}/${path:?}' && rm -rf -- '${target_dir}/${path}'" 2> /dev/null || true
         else
-            if [ -e "${target_dir}/${path}" ]; then
-                rm -rf -- "${target_dir}/${path}"
+            if [ -e "${target_dir:?}/${path:?}" ]; then
+                rm -rf -- "${target_dir:?}/${path:?}"
                 log_msg notice "tombstone: deleted resurrected ${path} on target"
             fi
         fi
@@ -640,8 +651,9 @@ compute_conflict_list() {
         esac
         [ -f "${src}/${path}" ] || continue
         if [ -n "${target_host}" ]; then
-            ssh "${target_host}" "[ -f '${target_dir}/${path}' ]" 2> /dev/null || continue
-            remote_sum=$(ssh "${target_host}" "cksum < '${target_dir}/${path}'" 2> /dev/null | awk '{print $1}')
+            # ssh -n so neither call consumes the enclosing while-read stdin.
+            ssh -n "${target_host}" "[ -f '${target_dir}/${path}' ]" 2> /dev/null || continue
+            remote_sum=$(ssh -n "${target_host}" "cksum < '${target_dir}/${path}'" 2> /dev/null | awk '{print $1}')
         else
             [ -f "${target_dir}/${path}" ] || continue
             remote_sum=$(cksum < "${target_dir}/${path}" 2> /dev/null | awk '{print $1}')
@@ -677,7 +689,8 @@ mark_conflicts_on_target() {
         log_msg notice "conflict on ${path}; preserving target version as ${cname}"
         if [ -n "${target_host}" ]; then
             rsync -a "${target_uri}/${path}" "${src}/${cname}" 2> /dev/null
-            ssh "${target_host}" "mv -- '${target_dir}/${path}' '${target_dir}/${cname}'"
+            # ssh -n so the rename doesn't eat our while-read stdin.
+            ssh -n "${target_host}" "mv -- '${target_dir}/${path}' '${target_dir}/${cname}'"
         else
             cp -- "${target_dir}/${path}" "${src}/${cname}"
             mv -- "${target_dir}/${path}" "${target_dir}/${cname}"
@@ -694,10 +707,14 @@ sync_protected() {
     local -r plist="${1}/${cf_protected_list}"
     local -r bpath=$(get_backup_path "${1}")
 
+    # rsync_opts is a space-separated option bag that MUST word-split.
+    # Everything else is quoted since it may contain paths with spaces.
     if [ -n "${bpath}" ]; then
+        # shellcheck disable=SC2086
         rsync ${rsync_opts} "--exclude-from=${plist}" "--backup-dir=${bpath}" \
               "${target_uri}/" "${source_dir}"
     else
+        # shellcheck disable=SC2086
         rsync ${rsync_opts} "--exclude-from=${plist}" \
               "${target_uri}/" "${source_dir}"
     fi
@@ -741,10 +758,13 @@ sync() {
 
     [[ "${can_sync_cvsignore}" -eq 1 ]] && sync_cvsignore
     mark_conflicts_on_target "${source_dir}"
+    # rsync_opts is a space-separated option bag that MUST word-split.
     if [ -n "${bpath}" ]; then
+        # shellcheck disable=SC2086
         rsync ${rsync_opts} "--backup-dir=${bpath}" \
               "${source_dir}/" "${target_uri}"
     else
+        # shellcheck disable=SC2086
         rsync ${rsync_opts} "${source_dir}/" "${target_uri}"
     fi
 }

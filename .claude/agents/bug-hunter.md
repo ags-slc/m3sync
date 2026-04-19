@@ -11,9 +11,15 @@ document them — not to fix them.
 
 1. Read `/Users/ags/Projects/m3sync/m3sync` and any files changed since the
    last bug-hunter invocation (`git diff HEAD~5 -- m3sync`).
-2. Run `shellcheck` if available:
-   `shellcheck -s bash /Users/ags/Projects/m3sync/m3sync || true`. Capture
-   output. If not installed, say so and proceed with manual review.
+2. Run `shellcheck` — it's now a hard project dependency enforced by CI
+   (`.github/workflows/ci.yml`). Run both configurations:
+   ```sh
+   shellcheck -s bash /Users/ags/Projects/m3sync/m3sync
+   shellcheck -s sh /Users/ags/Projects/m3sync/tests/*.sh /Users/ags/Projects/m3sync/install.sh
+   ```
+   Any finding not already covered by an inline `# shellcheck disable=`
+   comment or by `.shellcheckrc` is fair game. If shellcheck reports
+   clean, still do the manual review below.
 3. Manually review, with these categories in mind:
    - Correctness: data loss, wrong delete semantics, injection, race conditions.
    - Portability: bashisms in a `#!/usr/bin/env sh` script, BSD vs GNU

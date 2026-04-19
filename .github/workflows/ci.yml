@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          shellcheck --version | head -3
+      - name: Lint m3sync
+        run: shellcheck -s bash m3sync
+      - name: Lint tests and installer
+        run: shellcheck -s sh tests/lib.sh tests/run.sh tests/test_*.sh install.sh
+
+  tests:
+    name: tests (${{ matrix.rsync }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu ships GNU rsync — exercises the full feature set
+          # including -b / --backup-dir.
+          - os: ubuntu-latest
+            rsync: gnu
+          # macOS 13+ ships openrsync as /usr/bin/rsync; exercises the
+          # degraded-backup path and the detect_openrsync branch.
+          - os: macos-latest
+            rsync: openrsync
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show rsync banner
+        run: rsync --version | head -3
+      - name: Make tests executable
+        run: chmod +x m3sync install.sh tests/run.sh tests/lib.sh tests/test_*.sh
+      - name: Run test suite
+        run: ./tests/run.sh

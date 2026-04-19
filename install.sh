@@ -79,6 +79,9 @@ case ":${PATH}:" in
         : ;;
     *)
         printf '\nNote: %s is not on your PATH. Add this to your shell init:\n' "${PREFIX}"
+        # ${PATH} here is literal text we want the user to copy into
+        # their shell rc; it must NOT expand at installer runtime.
+        # shellcheck disable=SC2016
         printf '    export PATH="%s:${PATH}"\n' "${PREFIX}" ;;
 esac
 

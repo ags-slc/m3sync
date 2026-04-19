@@ -59,6 +59,23 @@ When you add a feature or fix a bug, add a test that would have failed
 before your change. Regression tests are cheap insurance for a script
 that touches people's files.
 
+## Linting
+
+`shellcheck` gates the repo. Run it locally before committing:
+
+```sh
+shellcheck -s bash m3sync
+shellcheck -s sh tests/lib.sh tests/run.sh tests/test_*.sh install.sh
+```
+
+Install with `brew install shellcheck` on macOS or `apt install
+shellcheck` on Debian/Ubuntu. Project-wide suppressions live in
+`.shellcheckrc`; one-off intentional patterns should carry an inline
+`# shellcheck disable=SCxxxx` with a comment saying why. CI
+(`.github/workflows/ci.yml`) runs shellcheck on every push and PR,
+and the test suite against both GNU rsync (Ubuntu) and openrsync
+(macOS) — don't merge red.
+
 ## Repository layout
 
 ```

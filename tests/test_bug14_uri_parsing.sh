@@ -33,9 +33,18 @@ esac
 mkdir -p "${TESTDIR}/bin"
 cat > "${TESTDIR}/bin/ssh" <<'SHIM'
 #!/bin/sh
+# Skip any ssh flags (-n, -o, -i ...) to capture the host argument.
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -[a-zA-Z]) shift ;;       # short flag with no arg
+        -[a-zA-Z]=*) shift ;;     # short flag with inline arg
+        --) shift; break ;;
+        -*) shift ;;
+        *) break ;;
+    esac
+done
 printf '%s\n' "$1" > "${SHIM_LOG}"
-exit 1    # pretend stat failed so the sync continues to rsync (which
-          # will also fail, but by then we've captured the host arg).
+exit 1
 SHIM
 chmod +x "${TESTDIR}/bin/ssh"
 export SHIM_LOG="${TESTDIR}/ssh-host.log"

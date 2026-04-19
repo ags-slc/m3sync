@@ -43,6 +43,10 @@ $(cat "${SHIM_LOG}")"
 
 # Each of these should be refused at parse time.
 MARKER="${TESTDIR}/pwned"
+# The $(touch ...) must NOT expand locally; single quotes around it
+# are the point of the test. shellcheck's SC2016 correctly notes the
+# non-expansion, which is exactly what we want here.
+# shellcheck disable=SC2016
 _check_unsafe_rejected 'fakehost:/tmp/safe-$(touch '"${MARKER}"')-dir' || exit 1
 _check_unsafe_rejected 'fakehost:/tmp/safe-`touch '"${MARKER}"'`-dir'  || exit 1
 _check_unsafe_rejected 'fakehost:/tmp/foo;touch\ '"${MARKER}"           || exit 1

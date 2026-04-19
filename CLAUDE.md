@@ -42,10 +42,20 @@ context.
 ## Key files
 
 - `m3sync` — the script.
+- `install.sh` — the curl-installer. Honors `M3SYNC_PREFIX`,
+  `M3SYNC_REF`, `M3SYNC_URL_BASE`.
 - `tests/run.sh` — test runner; each `test_*.sh` is independent. Use
   `VERBOSE=1` for trace output.
 - `tests/lib.sh` — helpers (`setup_env`, `run_sync`, `mkfile`,
   `assert_file_{exists,missing}`, `touch_past`, `touch_future`).
+- `.shellcheckrc` — project lint config. Run `shellcheck -s bash m3sync`
+  and `shellcheck -s sh tests/*.sh install.sh` before committing; CI
+  enforces this. The file documents which specific SC codes are
+  project-wide disabled and why; everything else should be fixed at
+  the call site or carry an inline `# shellcheck disable=` with a
+  comment justifying it.
+- `.github/workflows/ci.yml` — CI runs shellcheck on every push/PR,
+  plus the test suite on Ubuntu (GNU rsync) and macOS (openrsync).
 - `docs/FINDINGS-bugs.md` — numbered bug list (BUG-01…BUG-33). Authoritative.
 - `docs/FINDINGS-algorithm.md` — sync-semantics analysis + scenario matrix.
 - `docs/FINDINGS-concurrency.md` — Syncthing-style concurrency design

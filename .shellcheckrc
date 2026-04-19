@@ -1,0 +1,21 @@
+# Project-wide shellcheck configuration.
+#
+# Suppressions below are deliberate patterns that shellcheck flags
+# correctly but which we don't want to change. Everything else is
+# handled with inline '# shellcheck disable=XXXX' comments at the
+# specific call site, so the intent stays visible in the code.
+
+# SC1091: tests and the runner source lib.sh via a runtime path; we
+# can't give shellcheck a static -x entry without duplicating the
+# source= path in every test. The sourcing is safe and reviewed.
+disable=SC1091
+
+# SC2012: 'use find instead of ls' is a legitimate concern for
+# user-input filenames. In our tests we 'ls' fixed filename patterns
+# we just created ourselves, so ls is appropriate.
+disable=SC2012
+
+# SC2153: shellcheck sometimes can't see that setup_env (in lib.sh)
+# sets SRC/DST because lib.sh is disabled above. The variables are
+# assigned; this warning is a false positive with our test layout.
+disable=SC2153

@@ -19,7 +19,7 @@ chmod 000 "${SRC}/.m3sync/settings"
 # With -o, a read error on settings must not silently "succeed". Accept
 # either a nonzero exit or a log mentioning the file; the current bug is
 # that both are absent.
-RUN_OUT=$("${M3SYNC}" -o -v "${SRC}" "${DST}" 2>&1)
+"${M3SYNC}" -o -v "${SRC}" "${DST}" > /dev/null 2>&1
 RUN_RC=$?
 
 # Restore perms so cleanup works.
