@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 
 # m3sync: minimalistic multi-machine sync
 #
@@ -14,9 +14,12 @@
 # cases, and can be an effective synchronization utility provided the user
 # understands the limitations.
 #
-# POSIX and mostly POSIX-compliant systems should be compatible with m3sync. The
-# feature set is purposefully minimal to acheive maximum portability, and in
-# order to limit external dependencies.
+# Runtime dependencies: bash (or a sufficiently ksh-compatible shell with
+# 'typeset', '[[ ]]', and 'local -r'), rsync, plus ssh for remote targets.
+# The script is intentionally small — no Python, Perl, or any other
+# runtime — so it stays readable and portable across the environments
+# users actually have (Linux, macOS, *BSD). Pure-POSIX sh is not a
+# supported target; see docs/FINDINGS-bugs.md BUG-12.
 #
 # This tool began as a thought experiment on how to create a bi-directional file
 # synchronization tool using only utilities that are commonly available at every

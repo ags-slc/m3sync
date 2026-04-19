@@ -95,8 +95,8 @@
 ## Medium (edge cases, portability)
 
 - **[BUG-12] Shebang `/usr/bin/env sh` but script uses ksh/bash features** — m3sync:1
-  - `typeset -r`, `typeset -i`, `[[ ... ]]`, `local -r` are not POSIX. On dash, the script dies on line 33.
-  - Suggested fix: `#!/usr/bin/env bash` (truthful), or convert to POSIX.
+  - What: `typeset -r`, `typeset -i`, `[[ ... ]]`, `local -r` are not POSIX. On dash (Ubuntu's `/bin/sh`), the script died on line 33: `typeset: not found`, taking every test with it at rc=127.
+  - Fix applied: shebang changed to `#!/usr/bin/env bash` and the header comment now states bash (or a sufficiently ksh-compatible shell) as the runtime dependency. A pure-POSIX rewrite remains out of scope — the feature surface we'd lose (typed integers, `[[ ]]`, `local`) is not worth the readability cost for this script. Surfaced by CI, which is exactly why we set CI up.
 
 - **[BUG-13] `typeset -r timestamp=...` prevents re-derivation** — m3sync:35
   - Readonly prevents retry logic from refreshing the timestamp; compounds BUG-05.
