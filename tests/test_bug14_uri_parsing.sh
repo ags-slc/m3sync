@@ -33,17 +33,21 @@ esac
 mkdir -p "${TESTDIR}/bin"
 cat > "${TESTDIR}/bin/ssh" <<'SHIM'
 #!/bin/sh
-# Skip any ssh flags (-n, -o, -i ...) to capture the host argument.
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        -[a-zA-Z]) shift ;;       # short flag with no arg
-        -[a-zA-Z]=*) shift ;;     # short flag with inline arg
-        --) shift; break ;;
-        -*) shift ;;
-        *) break ;;
-    esac
-done
-printf '%s\n' "$1" > "${SHIM_LOG}"
+# Only record the FIRST ssh invocation; later calls from other sync
+# phases (conflict detection, tombstone purge) can shift the perceived
+# host and would race. Skip leading flags to find the host arg.
+if [ ! -s "${SHIM_LOG}" ]; then
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -[a-zA-Z]) shift ;;
+            -[a-zA-Z]=*) shift ;;
+            --) shift; break ;;
+            -*) shift ;;
+            *) break ;;
+        esac
+    done
+    printf '%s\n' "$1" > "${SHIM_LOG}"
+fi
 exit 1
 SHIM
 chmod +x "${TESTDIR}/bin/ssh"
